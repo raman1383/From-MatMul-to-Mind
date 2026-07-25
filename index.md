@@ -14,15 +14,40 @@ these are pattern learning & discovery machines. the foundations for enabling us
 
 AI may get over-hyped in the short-term, but it is extremely under-hyped in the long-term, the products & businesses may come & go, but the computational & mathematical ideas of creating intelligence are as close to eternal as us mere mortals can reach.
 
-Contrary to popular belief, these neural-nets are not "un-interpretable black boxes", they are **grown** "computational organisms", they go through a developmental process much like biological embryos, the representations & circuitry they develop rivals works of art such as Mona-Lisa, Sistine Chapel & may others, in this course we develop the "mind's eye" capable of appreciating these beauties.
+Contrary to popular belief, these neural-nets are not "un-interpretable black boxes", they are **grown** "computational organisms", they go through a developmental process much like biological embryos, the representations & circuitry they develop rivals works of art such as Mona-Lisa, Sistine Chapel & may others, in this course we develop the "mind's eye" capable of appreciating & **building** these beauties.
 
 
 
 
 # why this course ?
-Deep understanding of modern AI systems necessitates a hardware-integrated approach, scaling laws clearly demonstrate that quantity is a quality of its own, so in this course we will also cover large-scale training & inference mechanics of AI, 
 
-the systems(GPUs, cables, power) allow for a small set of algorithmic primitives(matrix multiply, first-order optimizations) to be executed efficiently at scale, thats why often in the course we need to know how hardware & software shape each others evolution.
+- Rather than presenting the Transformer as one complex architecture, we will construct it incrementally
+![transformer-progress-levels](media/transformer-progress-levels.png)
+
+- A from-scratch PyTorch implementation(using einops so every tensor shape & operation is explicitly clarified), visualizing the model's "tensor anatomy" & "computational physiology"
+![tensor-anatomy-and-computational-physiology](media/...)
+
+
+- The course is designed to be as "stand alone" as possible, a new pedagogical method used is "Q4AI" which are prompts for the student to give their favorite AI chatbot, covering any possible ambiguities or missing pre-requisite.
+
+- There will be small web-apps you can download & run locally letting you experiment w/ the abstract math concepts to make them more intuitive & concrete(like softmax, cross-entropy &...)
+![web-apps](media/...)
+
+
+- hardware integrated approach, knowing how the hardware(GPUs, TPUs, accelerators) executes the software is crucial for scaling up, where will the performance bottlenecks & how to solve them
+![GPU-TPU-arch-and-comp](media/...)
+
+
+- how to scale your large-scale training & inference, to many devices & datacenters efficiently
+![large-scale-parallelism-and-comms-](media/...)
+
+- citations to relevant papers, blogs & videos for deeper dives 
+
+
+hardware requirements:\
+minimal, use free [Google Colab](https://colab.research.google.com) if you don't have access to GPU w/ at least 2GB VRAM.
+
+---
 
 
 
@@ -46,12 +71,12 @@ video version of this blog series:
 
 # [Level 1](blogs/level-1.md)
     x\
-    y\
+    cross-entropy loss
     z\
 
 # [Level 2](blogs/level-2.md)
-    x\
-    y\
+    positional encodings,for text & images, why & how
+    residual connections
     z\
 
 # [Level 3](blogs/level-3.md)
@@ -66,3 +91,14 @@ video version of this blog series:
     x\
     y\
     z\
+
+
+---
+how to communicate:
+- start w/ empowerment promise
+- successive circling
+- contrast gives color
+- get in/out stations
+- questions as igniters
+
+- last slide: contributions
