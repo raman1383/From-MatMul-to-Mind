@@ -83,6 +83,7 @@ video version of this blog series:
     x\
     y\
     z\
+    
 # [Level 4](blogs/level-4.md)
     x\
     y\
@@ -93,12 +94,3 @@ video version of this blog series:
     z\
 
 
----
-how to communicate:
-- start w/ empowerment promise
-- successive circling
-- contrast gives color
-- get in/out stations
-- questions as igniters
-
-- last slide: contributions
