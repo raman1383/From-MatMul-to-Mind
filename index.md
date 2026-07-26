@@ -18,6 +18,8 @@ Contrary to popular belief, these neural-nets are not "un-interpretable black bo
 
 
 
+AI, the starship for the mind.
+(adaptation from Steve Jobs' "software, bicycle for the mind")
 
 # why this course ?
 
@@ -83,14 +85,16 @@ video version of this blog series:
     x\
     y\
     z\
-    
+
 # [Level 4](blogs/level-4.md)
     x\
     y\
     z\
+
 # [Level 5](blogs/level-5.md)
     x\
     y\
     z\
 
 
+# [level 6](blogs/level-6.md)
