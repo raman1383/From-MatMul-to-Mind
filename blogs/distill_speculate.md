@@ -1,0 +1,1 @@
+train a large model then distill it into a smaller model then user the small one to do speculative decoding from the larger model 

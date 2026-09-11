@@ -4,13 +4,13 @@ title: From MatMul To Mind
 ---
 
 
-# Why Care about AI ?
+# Value of this course:
 
 This course will give you a deep understanding of neural networks, more specifically, the Transformer architecture, arguably the closest humanity has come to a “**Scalable Universal Learning Algorithm**.”
 
 Concepts underlying modern AI are extremely general-purpose. 
 To judge them solely by their current applications (in LLMs) is like judging the uses of electricity based on 19th century appliances, it's missing the larger point: 
-these are pattern learning & discovery machines. the foundations for enabling us to build Dyson Swarms, unify Quantum Field Theory & General Relativity, solve aging & exceed our biological limits in perception & thought(20W meat machines), build interstellar economies & talk to intelligent alien civilizations... 
+these are pattern learning & discovery machines. the foundations for enabling us to build Dyson Swarms, unify Quantum Field Theory & General Relativity, solve aging & exceed our biological limits in perception & thought, build interstellar economies & one day, talk to intelligent alien civilizations... 
 
 AI may get over-hyped in the short-term, but it is extremely under-hyped in the long-term, the products & businesses may come & go, but the computational & mathematical ideas of creating intelligence are as close to eternal as us mere mortals can reach.
 
@@ -21,7 +21,9 @@ Contrary to popular belief, these neural-nets are not "un-interpretable black bo
 AI, the starship for the mind.
 (adaptation from Steve Jobs' "software, bicycle for the mind")
 
-# why this course ?
+---
+
+Our approach:
 
 - Rather than presenting the Transformer as one complex architecture, we will construct it incrementally
 ![transformer-progress-levels](media/transformer-progress-levels.png)
@@ -32,7 +34,7 @@ AI, the starship for the mind.
 
 - The course is designed to be as "stand alone" as possible, a new pedagogical method used is "Q4AI" which are prompts for the student to give their favorite AI chatbot, covering any possible ambiguities or missing pre-requisite.
 
-- There will be small web-apps you can download & run locally letting you experiment w/ the abstract math concepts to make them more intuitive & concrete(like softmax, cross-entropy &...)
+- There will be small web-apps you can download & run locally, letting you experiment w/ the abstract math concepts to make them more intuitive & concrete(like softmax, cross-entropy &...)
 ![web-apps](media/...)
 
 
@@ -40,7 +42,7 @@ AI, the starship for the mind.
 ![GPU-TPU-arch-and-comp](media/...)
 
 
-- how to scale your large-scale training & inference, to many devices & datacenters efficiently
+- how to scale your training & inference, to many devices & datacenters efficiently
 ![large-scale-parallelism-and-comms-](media/...)
 
 - citations to relevant papers, blogs & videos for deeper dives 
@@ -72,7 +74,9 @@ video version of this blog series:
 
 
 # [Level 1](blogs/level-1.md)
-    x\
+    tokenization
+    embeddings
+    (safe)softmax
     cross-entropy loss
     z\
 
@@ -92,9 +96,15 @@ video version of this blog series:
     z\
 
 # [Level 5](blogs/level-5.md)
-    x\
-    y\
-    z\
+    FFN MLP
+    GLU
+    MoE
 
 
 # [level 6](blogs/level-6.md)
+    scaling
+
+
+# [level 7](blogs/level-7.md)
+    distillation
+    quantization

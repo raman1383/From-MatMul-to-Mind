@@ -71,5 +71,10 @@ now lets build the computational machinery enabling these vector spaces:
 
 we will start w/ the simplest primitive in modern AI systems, the linear layer
 
+
+here is an advice true in romance & matrix multiplication:
+"kissers must match... or it won't work out !"
+
+
 ## gradient descent via back-propagation
 ## normalization & optimizers
