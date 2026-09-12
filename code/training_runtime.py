@@ -1,0 +1,1 @@
+# get batch -> FWD -> BWD -> step. repeat

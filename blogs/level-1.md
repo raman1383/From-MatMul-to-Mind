@@ -1,41 +1,18 @@
-Text Dataset:
+First lets take a look at our datasets:
 
-I've chosen the "Tiny Stories" for our model training dataset, it's a bunch of small & simple kids stories.
+we have one dataset for text & another for images...
 
-you don't have to download the 5GB dataset from Hugging Face, I've done it and extracted the first 10Mib of it as our training dataset and the next 1Mb as our test dataset. 
+the text dataset is a part of the "Tiny Stories" dataset which is a bunch of small & simple stories, 
 
 
-lets take a look:
-
-a bunch of simple stories,
 
 these are what's called "special tokens", this dataset was made by another LLM chatbot & these tokens are used to tell the LLM were a document ends & a new one begins, & the LLM uses these tokens to say it has finished generating the answer to a prompt.
+
 
 
 our training goal:
 * given a sequence as input, output that sequence shifted one token to the right
 ![alt text](../media/autoregressive_gen_steps.png)
----
-
-Image Dataset:
-
-The work-horse of ML, the good-old reliable MNIST dataset.
-28*28 grey-scale images of hand-written digits.
-
-
-here is our training objective:
-
-given a canvas of 28*(2*28) we train our model to complete the image based upon these rules:
-
-* if only the top layer of pixels are white     -> right digit =  (left digit + 1) mod 10
-* if the top & bottom layer of pixels are white -> right digit =  (left digit + 2) mod 10
-
-
-we generate a dataset each sample being a canvas containing a pair of digits.
-
-then corrupt the canvas by picking a few spots as seed positions and setting their surrounding pixels to random values, the trained model must be able to output the clean canvas.
-
-another task is to randomize one side of the canvas & let the model output the complete canvas.
 
 ---
 
@@ -80,3 +57,12 @@ vocabulary size is the number of unique symbols our model can emit, a larger num
 ---
 
 Tokenizing Images:
+
+
+
+
+---
+
+Bigram Language Model:
+
+
