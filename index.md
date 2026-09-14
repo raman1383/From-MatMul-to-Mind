@@ -1,6 +1,6 @@
 ---
 layout: default
-title: From MatMul To Mind
+title: From Matrix To Mind
 ---
 
 

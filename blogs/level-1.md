@@ -1,16 +1,12 @@
-First lets take a look at our datasets:
+Level 1: Tokenization & Embedding
 
-we have one dataset for text & another for images...
+first, lets take a look at our dataset:
 
 the text dataset is a part of the "Tiny Stories" dataset which is a bunch of small & simple stories, 
 
-
-
 these are what's called "special tokens", this dataset was made by another LLM chatbot & these tokens are used to tell the LLM were a document ends & a new one begins, & the LLM uses these tokens to say it has finished generating the answer to a prompt.
 
-
-
-our training goal:
+here is our training objective:
 * given a sequence as input, output that sequence shifted one token to the right
 ![alt text](../media/autoregressive_gen_steps.png)
 
@@ -18,14 +14,13 @@ our training goal:
 
 Tokenization:
 
-Vectors are the universal language, in Tokenization we map sub-words, image/audio chunks into vectors, so our model can process our world. 
+Vectors are the universal language, during Tokenization we map sub-words, image & audio chunks into vectors, so our model can process them. 
 
 
+But here is an engeneering trade-off:
 
-The trade-offs:
-
-why not map an entire sentence/image into just one token? 
-why not map a  single letter/pixel   into just one token? 
+why not map an entire sentence/image into just one token ID? 
+why not map a  single letter/pixel   into just one token ID? 
 
 It is a balancing act between average length and content capacity: 
 
@@ -53,12 +48,6 @@ Now let's write an algorithm that:
 the repeat this process until we hit the limit of our vocabulary size.
 
 vocabulary size is the number of unique symbols our model can emit, a larger number makes the model more expressive(entropy rate = log 1/vocab) but also more expensive(the output liner layer is 'embed_dim' by 'vocab_size')
-
----
-
-Tokenizing Images:
-
-
 
 
 ---
