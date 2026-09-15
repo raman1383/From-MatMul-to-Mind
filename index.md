@@ -4,7 +4,7 @@ title: From Matrix To Mind
 ---
 
 
-# Value of this course:
+# Value:
 
 This course will give you a deep understanding of neural networks, more specifically, the Transformer architecture, arguably the closest humanity has come to a “**Scalable Universal Learning Algorithm**.”
 
