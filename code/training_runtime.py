@@ -60,9 +60,9 @@ class BatchLoader:
         self.device = device 
 
         if train == True:
-            data_file = "./data/tokenized-2048-train-tinyStories-10Mb.txt"
+            data_file = "../data/tokenized-2048-train-tinyStories-10Mb.txt"
         else:
-            data_file = "./data/tokenized-2048-valid-tinyStories-1Mb.txt"
+            data_file = "../data/tokenized-2048-valid-tinyStories-1Mb.txt"
 
 
         self.tokens = self._load_tokens(data_file)
