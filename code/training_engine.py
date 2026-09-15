@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from einops import rearrange
 
 
-def train_and_save_model(model, configs:dict, device, training_steps:int):
+def train_and_save_model(model:torch.nn.Module, configs:dict, device, training_steps:int):
 
     loss_history = []
 
@@ -140,6 +140,49 @@ def plot_loss_history(config):
 
 
 
-# loader = BatchLoader(train = True, batch_size=4, max_seq_len=12, device='cuda')
-# x, y = loader.get_batch()
-# print(x, y)
+def inspect_weight_file(weight_file_path: str, print_weights: bool):
+
+    weight_file_path = Path(weight_file_path)
+    if not weight_file_path.exists():
+        raise FileNotFoundError(f"Weight file not found: {weight_file_path}")
+
+    state_dict = torch.load(weight_file_path, map_location="cpu")
+    print(f"Loaded state_dict from {weight_file_path}")
+
+    # Number of individual scalar parameters
+    total_parameters = sum(param.numel() for param in state_dict.values())
+
+    # Number of parameter tensors
+    total_tensors = len(state_dict)
+
+    print(f"Number of parameter tensors: {total_tensors}")
+    print(f"Number of parameters: {total_parameters:,}")
+
+
+    # PARAMETER SUMMARY
+
+    print("\n" + "=" * 80)
+    print("PARAMETER SUMMARY")
+    print("=" * 80)
+
+    for name, param in state_dict.items():
+        print(
+            f"{name}: "
+            f"shape={tuple(param.shape)}, "
+            f"dtype={param.dtype}, "
+            f"requires_grad={param.requires_grad}, "
+            f"numel={param.numel():,}"
+        )
+
+
+    # PARAMETER TENSORS
+
+    if print_weights:
+        print("\n" + "=" * 80)
+        print("PARAMETER TENSORS")
+        print("=" * 80)
+
+        for name, param in state_dict.items():
+            print(f"\n{name}")
+            print("-" * 80)
+            print(param)
