@@ -7,49 +7,49 @@ from tokenizerModule import Tokenizer
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-@torch.inference_mode()
-def inference(
-        model_scaffold:torch.nn.Module, 
-        configs:Dict[str, Any], 
-        device:Union[str, torch.device], 
-        prompt:str, 
-        max_new_tokens:int, 
-        temperature: float = 1.0,
-        top_k: Optional[int] = 50,
-        top_p: Optional[float] = None,
-        eos_token_id: Optional[int] = 83,
-    )->str:
+# @torch.inference_mode()
+# def inference(
+#         model_scaffold:torch.nn.Module, 
+#         configs:Dict[str, Any], 
+#         device:Union[str, torch.device], 
+#         prompt:str, 
+#         max_new_tokens:int, 
+#         temperature: float = 1.0,
+#         top_k: Optional[int] = 50,
+#         top_p: Optional[float] = None,
+#         eos_token_id: Optional[int] = 83,
+#     )->str:
 
 
-    if max_new_tokens < 0:
-        raise ValueError("num_gen_steps must be non-negative")
+#     if max_new_tokens < 0:
+#         raise ValueError("num_gen_steps must be non-negative")
 
 
-    # load model
-    model = load_model_weights(model_scaffold, configs["save_path"], device)
-    if model is None:
-        raise RuntimeError(f"Failed to load weights from {configs['save_path']}")
-    model.eval()
+#     # load model
+#     model = load_model_weights(model_scaffold, configs["save_path"], device)
+#     if model is None:
+#         raise RuntimeError(f"Failed to load weights from {configs['save_path']}")
+#     model.eval()
 
 
-    prompt_ids: List[int] = Tokenizer.encode(prompt)
-    if not prompt_ids:
-        raise ValueError("Prompt encoded to an empty sequence")
+#     prompt_ids: List[int] = Tokenizer.encode(prompt)
+#     if not prompt_ids:
+#         raise ValueError("Prompt encoded to an empty sequence")
 
 
-    # TODO: truncate to not exceede max seq length
-    input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)  # (1, T)
+#     # TODO: truncate to not exceede max seq length
+#     input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)  # (1, T)
 
 
-    #     # Prefill: Tokenize and initialize sequence context
-    #     kv_cache = prefill(prompt_as_IDs, configs, device)
+#     #     # Prefill: Tokenize and initialize sequence context
+#     #     kv_cache = prefill(prompt_as_IDs, configs, device)
 
-    #     # Decode: Generate new tokens step-by-step
-    #     decode(prompt_as_IDs, kv_cache, model, configs, device, temperature, top_k)
+#     #     # Decode: Generate new tokens step-by-step
+#     #     decode(prompt_as_IDs, kv_cache, model, configs, device, temperature, top_k)
 
-    # # Decode tokens back into human-readable text
-    # # generated_tokens = context_state["generated_tokens"]
-    # return Tokenizer.decode(generated_tokens)
+#     # # Decode tokens back into human-readable text
+#     # # generated_tokens = context_state["generated_tokens"]
+#     # return Tokenizer.decode(generated_tokens)
 
 
 
@@ -83,15 +83,11 @@ def load_model_weights(
 def prefill(prompt: str, configs: dict, device: str) -> dict:
     ...
 
-
-
 def decode(KV_cache: dict, model, configs: dict, device: str, temperature: float = 1.0, top_k: int = 10):
     ...
 
-
 def sample():
     ...
-
 
 @dataclass
 class KVCache:
@@ -118,10 +114,17 @@ class KVCache:
 
 
 
-#--- autoregressive inference ---
 
 @torch.inference_mode()
-def simple_and_naive_inference(model_scaffold, configs, num_gen_steps: int, prompt: str, device, temperature: float) -> str:
+def simple_and_naive_inference(model_scaffold:torch.nn.Module, 
+                               configs, 
+                               num_gen_steps: int, 
+                               prompt: str, 
+                               device, 
+                               temperature: float
+                               ) -> str:
+
+    print(f"[INFO] Starting inference with prompt: {prompt}")
 
     if num_gen_steps < 0:
         raise ValueError("[ERR] num_gen_steps must be non-negative")
@@ -129,55 +132,67 @@ def simple_and_naive_inference(model_scaffold, configs, num_gen_steps: int, prom
     if temperature < 0:
         raise ValueError("[ERR] temperature must be non-negative")
 
-    input_tokens = Tokenizer.encode(prompt)
-    if len(input_tokens) == 0:
+    prompt_to_IDs = Tokenizer.encode(prompt)
+    if len(prompt_to_IDs) == 0:
         raise ValueError("[ERR] Prompt produced no tokens. Provide a non-empty prompt.")
 
-
-    fresh_model = load_model_weights(model_scaffold, configs["save_path"], device)
-
-
-    fresh_model.eval()
-    max_seq_len = configs["max_seq_len"]
-
-    # keep the full prompt here so the returned text includes the full prompt
-    # plus all generated tokens.
-    # shape: [batch=1, seq_len]
-    generated_tokens = torch.tensor(
-        [input_tokens],
-        device=device,  
-        dtype=torch.long,
-    )
+    loaded_model = load_model_weights(model_scaffold, configs["save_path"], device)
 
 
-    print("\n--- Autoregressive Generation ---")
-    for step in range(num_gen_steps):
+    # a list for progressively appending our generated predictions to
+    # full_seq = prompt + generated tokens
+    full_seq = list(prompt_to_IDs)
 
-        # input is clipped to the training context window.
-        # shape: [1, context_len]
-        context_window = generated_tokens[:, -max_seq_len:]
+    loaded_model.eval()
+    with torch.no_grad():
+        for step in range(num_gen_steps):
+
+            print(f"full_seq before {step+1}/{num_gen_steps}:")
+            print(full_seq)
+
+            # clip long sequences to fit training context window
+            context_window_limited_seq = full_seq[-configs["max_seq_len"] :]
+
+            # convert to torch.tensor
+            # (batch_size=1, seq_len=len(context_window_limited_seq))
+            context_window_limited_seq_tensor = torch.tensor(
+                [context_window_limited_seq], 
+                device=device, 
+                dtype=torch.long
+            )
+            print(context_window_limited_seq_tensor.shape)
+            print(f"[INFO] Step {step+1}/{num_gen_steps}: Context window length: {context_window_limited_seq_tensor.shape[1]}")
+
+            # (batch_size=1, seq_len=len(context_window_limited_seq), vocab_size)
+            model_output_logits = loaded_model(context_window_limited_seq_tensor)
+            print(model_output_logits.shape)
+
+            # extract the logits for ONLY the final token position in the sequence
+            last_token_logits = rearrange(model_output_logits[:, -1, :], "1 vocab_size -> vocab_size")
+            print(last_token_logits.shape)
+
+            # temperature controls the sharpness of the distribution
+            # tempered_logits = last_token_logits / max(temperature, 1e-6)
+
+            # convert to probability distribution
+            probabilities = torch.softmax(last_token_logits, dim=-1)
+            print(probabilities.shape)
+            print(probabilities)
+
+            # multinomial sampling
+            next_token_tensor = torch.multinomial(probabilities, num_samples=1)
+            print("next_token_tensor.shape= ")
+            print(next_token_tensor.shape)
+            print(next_token_tensor)
+            next_token = next_token_tensor.item()
+
+            # Append predicted token to sequence for the next autoregressive loop step
+            full_seq.append(next_token)
+            print("full_seq.append after append: ")
+            print(full_seq)
+
+    return Tokenizer.decode(full_seq)
 
 
-        # model forward pass:
-        # logits shape: [1, context_len, vocab_size]
-        logits = fresh_model(context_window)
-
-        # final-position logits: [1, vocab_size]
-        last_logits = logits[0, -1, :]
-
-        if temperature == 0:
-            next_token = torch.argmax(last_logits, dim=-1, keepdim=True).unsqueeze(0)
-        else:
-            tempered_logits = last_logits / temperature
-            probabilities = torch.softmax(tempered_logits, dim=-1)
-            next_token = torch.multinomial(probabilities, num_samples=1).unsqueeze(0)
-
-        generated_tokens = torch.cat([generated_tokens, next_token], dim=1)
-
-    output_tokens = generated_tokens[0].tolist()
-    return Tokenizer.decode(output_tokens)
 
 
-
-# with open(configs["gen_samples"], "w", encoding="utf-8") as f:
-#     f.write(samples)

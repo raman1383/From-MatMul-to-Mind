@@ -135,7 +135,6 @@ def plot_loss_history(config):
     plt.style.use('dark_background')
     plt.grid(True, color='#333333')
     plt.legend()
-    # plt.savefig(config["loss_history_pic"], dpi=300)
     plt.show()
 
 
