@@ -122,3 +122,65 @@ class KVCache:
 
 # ---
 
+#--- autoregressive inference ---
+
+# @torch.inference_mode()
+# def inference(num_gen_steps: int, prompt: str, temperature: float) -> str:
+
+#     if num_gen_steps < 0:
+#         raise ValueError("num_gen_steps must be non-negative")
+
+#     if temperature < 0:
+#         raise ValueError("temperature must be non-negative")
+
+#     input_tokens = Tokenizer.encode(prompt)
+#     if len(input_tokens) == 0:
+#         raise ValueError("Prompt produced no tokens. Provide a non-empty prompt.")
+
+
+#     fresh_model.eval()
+#     max_seq_len = MODEL_CONFIGS["max_seq_len"]
+
+#     # keep the full prompt here so the returned text includes the full prompt
+#     # plus all generated tokens.
+#     # shape: [batch=1, seq_len]
+#     generated_tokens = torch.tensor(
+#         [input_tokens],
+#         device=device,  
+#         dtype=torch.long,
+#     )
+
+
+#     print("\n--- Autoregressive Generation ---")
+#     for step in range(num_gen_steps):
+
+#         # input is clipped to the training context window.
+#         # shape: [1, context_len]
+#         context_window = generated_tokens[:, -max_seq_len:]
+
+
+#         # model forward pass:
+#         # logits shape: [1, context_len, vocab_size]
+#         logits = fresh_model(context_window)
+
+#         # final-position logits: [1, vocab_size]
+#         last_logits = logits[0, -1, :]
+
+#         if temperature == 0:
+#             next_token = torch.argmax(last_logits, dim=-1, keepdim=True).unsqueeze(0)
+#         else:
+#             tempered_logits = last_logits / temperature
+#             probabilities = torch.softmax(tempered_logits, dim=-1)
+#             next_token = torch.multinomial(probabilities, num_samples=1).unsqueeze(0)
+
+#         generated_tokens = torch.cat([generated_tokens, next_token], dim=1)
+
+#     output_tokens = generated_tokens[0].tolist()
+#     return Tokenizer.decode(output_tokens)
+
+
+# samples = inference(2000, "Once upon a time, there was an", temperature=0.5)
+# print(samples)
+
+# with open(MODEL_CONFIGS["gen_samples"], "w", encoding="utf-8") as f:
+#     f.write(samples)
