@@ -139,7 +139,7 @@ def simple_and_naive_inference(model_scaffold:torch.nn.Module,
     loaded_model = load_model_weights(model_scaffold, configs["save_path"], device)
 
 
-    # a list for progressively appending our generated predictions to
+    # a list for progressively appending our generated predictions to.
     # full_seq = prompt + generated tokens
     full_seq = list(prompt_to_IDs)
 
@@ -160,29 +160,37 @@ def simple_and_naive_inference(model_scaffold:torch.nn.Module,
                 device=device, 
                 dtype=torch.long
             )
+            print("context_window_limited_seq_tensor.shape-> ")
             print(context_window_limited_seq_tensor.shape)
             print(f"[INFO] Step {step+1}/{num_gen_steps}: Context window length: {context_window_limited_seq_tensor.shape[1]}")
 
             # (batch_size=1, seq_len=len(context_window_limited_seq), vocab_size)
             model_output_logits = loaded_model(context_window_limited_seq_tensor)
+            print("model_output_logits.shape->")
             print(model_output_logits.shape)
 
             # extract the logits for ONLY the final token position in the sequence
             last_token_logits = rearrange(model_output_logits[:, -1, :], "1 vocab_size -> vocab_size")
+            print("last_token_logits.shape->")
             print(last_token_logits.shape)
 
             # temperature controls the sharpness of the distribution
-            # tempered_logits = last_token_logits / max(temperature, 1e-6)
+            tempered_logits = last_token_logits / max(temperature, 1e-6)
 
             # convert to probability distribution
-            probabilities = torch.softmax(last_token_logits, dim=-1)
+            probabilities = torch.softmax(tempered_logits, dim=-1)
+            print("probabilities.shape-> ")
             print(probabilities.shape)
+
+            print("probabilities-> ")
             print(probabilities)
 
             # multinomial sampling
             next_token_tensor = torch.multinomial(probabilities, num_samples=1)
             print("next_token_tensor.shape= ")
+            print("next_token_tensor.shape-> ")
             print(next_token_tensor.shape)
+            print("next_token_tensor-> ")
             print(next_token_tensor)
             next_token = next_token_tensor.item()
 
@@ -190,6 +198,8 @@ def simple_and_naive_inference(model_scaffold:torch.nn.Module,
             full_seq.append(next_token)
             print("full_seq.append after append: ")
             print(full_seq)
+            print("-"*80)
+
 
     return Tokenizer.decode(full_seq)
 
