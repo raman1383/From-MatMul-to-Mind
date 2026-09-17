@@ -116,7 +116,7 @@ class KVCache:
 
 
 @torch.inference_mode()
-def simple_and_naive_inference(model_scaffold:torch.nn.Module, 
+def simple_inference(model_scaffold:torch.nn.Module, 
                                configs, 
                                num_gen_steps: int, 
                                prompt: str, 
