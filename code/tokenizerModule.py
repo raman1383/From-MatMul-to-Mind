@@ -27,7 +27,7 @@ special_token_id = list(special_tokens.values())[0]
 special_token_str = list(special_tokens.keys())[0]
 
 
-class Tokenizer():
+class ID_mapper():
     
     def encode(text):
         """Safely split text by special tokens and encode"""

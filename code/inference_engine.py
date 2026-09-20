@@ -1,116 +1,191 @@
-# get model weights + prompt + [prefill, decode] -> KV cache + output seq
-
 import os
-import torch
-from einops import rearrange
-from tokenizerModule import Tokenizer
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-# @torch.inference_mode()
-# def inference(
-#         model_scaffold:torch.nn.Module, 
-#         configs:Dict[str, Any], 
-#         device:Union[str, torch.device], 
-#         prompt:str, 
-#         max_new_tokens:int, 
-#         temperature: float = 1.0,
-#         top_k: Optional[int] = 50,
-#         top_p: Optional[float] = None,
-#         eos_token_id: Optional[int] = 83,
-#     )->str:
+import torch
+import torch.nn.functional as F
+from einops import rearrange
 
+from tokenizerModule import ID_mapper
 
-#     if max_new_tokens < 0:
-#         raise ValueError("num_gen_steps must be non-negative")
+@dataclass
+class KVCache:
+    caches: List[Dict[str, Optional[torch.Tensor]]] = field(default_factory=list)
+    seq_len: int = 0
+    # After truncation, this tells the model what absolute position
+    # the *first* token currently in the cache corresponds to.
+    start_offset: int = 0
 
+    def update(self, layer_idx: int, key: torch.Tensor, value: torch.Tensor):
+        while len(self.caches) <= layer_idx:
+            self.caches.append({"k": None, "v": None})
 
-#     # load model
-#     model = load_model_weights(model_scaffold, configs["save_path"], device)
-#     if model is None:
-#         raise RuntimeError(f"Failed to load weights from {configs['save_path']}")
-#     model.eval()
+        if self.caches[layer_idx]["k"] is None:
+            self.caches[layer_idx]["k"] = key
+            self.caches[layer_idx]["v"] = value
+        else:
+            self.caches[layer_idx]["k"] = torch.cat(
+                [self.caches[layer_idx]["k"], key], dim=-2
+            )
+            self.caches[layer_idx]["v"] = torch.cat(
+                [self.caches[layer_idx]["v"], value], dim=-2
+            )
+        return self.caches[layer_idx]["k"], self.caches[layer_idx]["v"]
 
+    def truncate(self, max_len: int) -> None:
+        """Keep only the last max_len tokens and adjust the position offset."""
+        if self.seq_len <= max_len:
+            return
 
-#     prompt_ids: List[int] = Tokenizer.encode(prompt)
-#     if not prompt_ids:
-#         raise ValueError("Prompt encoded to an empty sequence")
+        dropped = self.seq_len - max_len
+        self.start_offset += dropped          # ← critical line
 
+        for cache in self.caches:
+            if cache["k"] is not None:
+                cache["k"] = cache["k"][:, :, -max_len:, :].contiguous()
+                cache["v"] = cache["v"][:, :, -max_len:, :].contiguous()
 
-#     # TODO: truncate to not exceede max seq length
-#     input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)  # (1, T)
+        self.seq_len = max_len
 
-
-#     #     # Prefill: Tokenize and initialize sequence context
-#     #     kv_cache = prefill(prompt_as_IDs, configs, device)
-
-#     #     # Decode: Generate new tokens step-by-step
-#     #     decode(prompt_as_IDs, kv_cache, model, configs, device, temperature, top_k)
-
-#     # # Decode tokens back into human-readable text
-#     # # generated_tokens = context_state["generated_tokens"]
-#     # return Tokenizer.decode(generated_tokens)
-
-
+    def reset(self):
+        self.caches = []
+        self.seq_len = 0
+        self.start_offset = 0
 
 def load_model_weights(
     model_scaffold: torch.nn.Module,
     save_path: str,
     device: torch.device,
-    ) -> Optional[torch.nn.Module]:
-
+) -> Optional[torch.nn.Module]:
     if not os.path.isfile(save_path):
         print(f"[ERROR] Weight file not found: {save_path}")
         return None
 
     try:
-        state_dict = torch.load(save_path, map_location=device)
+        state_dict = torch.load(save_path, map_location=device, weights_only=True)
         model_scaffold.load_state_dict(state_dict)
         model_scaffold = model_scaffold.to(device)
         model_scaffold.eval()
 
-        print(f"[INFO] Successfully loaded weights from {save_path}")
-        # Optional: print parameter summary only once
         n_params = sum(p.numel() for p in model_scaffold.parameters())
-        print(f"[INFO] Model has {n_params:,} parameters")
+        print(f"[INFO] Loaded weights from {save_path}  ({n_params:,} parameters)")
         return model_scaffold
-    
     except Exception as e:
         print(f"[ERROR] Failed to load weights: {e}")
         return None
 
 
-def prefill(prompt: str, configs: dict, device: str) -> dict:
-    ...
+@torch.inference_mode()
+def advanced_inference(
+    model_scaffold: torch.nn.Module,
+    configs: Dict[str, Any],
+    max_new_tokens: int,
+    prompt: str,
+    device: Union[str, torch.device],
+    temperature: float = 1.0,
+    top_k: Optional[int] = 50,
+    top_p: Optional[float] = None,
+    eos_token_id: Optional[int] = None,
+) -> str:
+    max_seq_len = configs["max_seq_len"]
 
-def decode(KV_cache: dict, model, configs: dict, device: str, temperature: float = 1.0, top_k: int = 10):
-    ...
+    prompt_ids = ID_mapper.encode(prompt)
+    if not prompt_ids:
+        raise ValueError("[ERR] Prompt produced no tokens.")
 
-def sample():
-    ...
+    model = load_model_weights(model_scaffold, configs["save_path"], device)
+    if model is None:
+        raise RuntimeError("Failed to load model checkpoint.")
 
-@dataclass
-class KVCache:
-    """
-    Explicit container for key/value tensors across layers.
+    kv_cache = KVCache()
+    full_seq = list(prompt_ids)
 
-    Design goals
-    ------------
-    - Clear ownership and lifetime
-    - Easy to inspect / debug
-    - Works for models with 0, 1, or many attention layers
-    - Supports both classic multi-head and GQA layouts
-    """
+    # ---------- PREFILL ----------
+    prefill_ids = full_seq[-max_seq_len:]
+    last_logits = prefill(model, prefill_ids, kv_cache, device)
+    kv_cache.seq_len = len(prefill_ids)          # ≤ max_seq_len
+    # start_offset is still 0
 
-    # List of (key, value) pairs, one entry per layer that has attention.
-    # For a pure embedding model this list is empty.
-    layers: List[Tuple[torch.Tensor, torch.Tensor]] = field(default_factory=list)
+    next_token = sample(last_logits, temperature, top_k, top_p).item()
 
-    # Current sequence length that the cache represents
-    seq_len: int = 0
+    # ---------- DECODE ----------
+    for _ in range(max_new_tokens):
+        if eos_token_id is not None and next_token == eos_token_id:
+            break
 
-    def is_empty(self) -> bool:
-        return len(self.layers) == 0
+        # 1. Append the newly generated token
+        full_seq.append(next_token)
+
+        # 2. Truncate FIRST (before calling the model)
+        if len(full_seq) > max_seq_len:
+            full_seq = full_seq[-max_seq_len:]
+            kv_cache.truncate(max_seq_len)        # updates seq_len and start_offset
+
+        # 3. Now the cache is guaranteed to have space / correct offset
+        logits = decode(model, next_token, kv_cache, device)
+        next_token = sample(logits, temperature, top_k, top_p).item()
+
+    return ID_mapper.decode(full_seq)
+
+def prefill(model, prompt_tokens, kv_cache, device):
+    input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=device)
+    logits = model(
+        input_ids,
+        kv_cache=kv_cache,
+        start_pos=kv_cache.start_offset,          # normally 0
+    )
+    return logits[:, -1, :]
+
+
+def decode(model, next_token_id, kv_cache, device):
+    input_id = torch.tensor([[next_token_id]], dtype=torch.long, device=device)
+
+    # After possible truncation, seq_len is already the length *before*
+    # adding the new token. So the new token’s absolute position is:
+    start_pos = kv_cache.start_offset + kv_cache.seq_len
+
+    logits = model(
+        input_id,
+        kv_cache=kv_cache,
+        start_pos=start_pos,
+    )
+    kv_cache.seq_len += 1
+    return logits[:, -1, :]
+
+
+def sample(
+    logits: torch.Tensor,
+    temperature: float = 1.0,
+    top_k: Optional[int] = 50,
+    top_p: Optional[float] = None,
+) -> torch.Tensor:
+    if logits.dim() > 1:
+        logits = logits.squeeze(0)
+
+    if temperature <= 0.0:
+        return torch.argmax(logits, dim=-1, keepdim=True)
+
+    logits = logits / max(temperature, 1e-6)
+
+    # Top-k
+    if top_k is not None and top_k > 0:
+        top_k = min(top_k, logits.size(-1))
+        threshold = torch.topk(logits, top_k)[0][..., -1, None]
+        logits = logits.masked_fill(logits < threshold, float("-inf"))
+
+    # Top-p (nucleus)
+    if top_p is not None and 0.0 < top_p < 1.0:
+        sorted_logits, sorted_idx = torch.sort(logits, descending=True)
+        cumulative = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+        mask = cumulative > top_p
+        mask[..., 1:] = mask[..., :-1].clone()
+        mask[..., 0] = False
+
+        logits[sorted_idx[mask]] = float("-inf")
+
+    probs = F.softmax(logits, dim=-1)
+    return torch.multinomial(probs, num_samples=1)
 
 
 
@@ -132,7 +207,7 @@ def simple_inference(model_scaffold:torch.nn.Module,
     if temperature < 0:
         raise ValueError("[ERR] temperature must be non-negative")
 
-    prompt_to_IDs = Tokenizer.encode(prompt)
+    prompt_to_IDs = ID_mapper.encode(prompt)
     if len(prompt_to_IDs) == 0:
         raise ValueError("[ERR] Prompt produced no tokens. Provide a non-empty prompt.")
 
@@ -187,7 +262,6 @@ def simple_inference(model_scaffold:torch.nn.Module,
 
             # multinomial sampling
             next_token_tensor = torch.multinomial(probabilities, num_samples=1)
-            print("next_token_tensor.shape= ")
             print("next_token_tensor.shape-> ")
             print(next_token_tensor.shape)
             print("next_token_tensor-> ")
@@ -201,7 +275,7 @@ def simple_inference(model_scaffold:torch.nn.Module,
             print("-"*80)
 
 
-    return Tokenizer.decode(full_seq)
+    return ID_mapper.decode(full_seq)
 
 
 
