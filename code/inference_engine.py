@@ -75,6 +75,9 @@ def load_model_weights(
         return None
 
 
+kv_cache:list[tuple[torch.tensor, torch.tensor]] = []
+
+
 @torch.inference_mode()
 def advanced_inference(
     model_scaffold: torch.nn.Module,
