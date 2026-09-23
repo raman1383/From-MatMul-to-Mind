@@ -1,7 +1,12 @@
+# RMS norm, weight initializer, tensor health checker(std-div, var, ...)
+
 import math
 import torch
 import torch.nn as nn
 from einops import reduce
+from dataclasses import dataclass, field
+from typing import Dict, List, Literal, Optional
+
 
 
 
@@ -84,9 +89,6 @@ def init_custom_weight(
 
 # ---
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional
-import torch
 
 TensorCategory = Literal["weight", "activation", "gradient", "optimizer_state"]
 
