@@ -4,53 +4,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
-from einops import rearrange
+from einops import rearrange, pack
 
 from tokenizerModule import ID_mapper
 
-@dataclass
-class KVCache:
-    caches: List[Dict[str, Optional[torch.Tensor]]] = field(default_factory=list)
-    seq_len: int = 0
-    # After truncation, this tells the model what absolute position
-    # the *first* token currently in the cache corresponds to.
-    start_offset: int = 0
 
-    def update(self, layer_idx: int, key: torch.Tensor, value: torch.Tensor):
-        while len(self.caches) <= layer_idx:
-            self.caches.append({"k": None, "v": None})
-
-        if self.caches[layer_idx]["k"] is None:
-            self.caches[layer_idx]["k"] = key
-            self.caches[layer_idx]["v"] = value
-        else:
-            self.caches[layer_idx]["k"] = torch.cat(
-                [self.caches[layer_idx]["k"], key], dim=-2
-            )
-            self.caches[layer_idx]["v"] = torch.cat(
-                [self.caches[layer_idx]["v"], value], dim=-2
-            )
-        return self.caches[layer_idx]["k"], self.caches[layer_idx]["v"]
-
-    def truncate(self, max_len: int) -> None:
-        """Keep only the last max_len tokens and adjust the position offset."""
-        if self.seq_len <= max_len:
-            return
-
-        dropped = self.seq_len - max_len
-        self.start_offset += dropped          # ← critical line
-
-        for cache in self.caches:
-            if cache["k"] is not None:
-                cache["k"] = cache["k"][:, :, -max_len:, :].contiguous()
-                cache["v"] = cache["v"][:, :, -max_len:, :].contiguous()
-
-        self.seq_len = max_len
-
-    def reset(self):
-        self.caches = []
-        self.seq_len = 0
-        self.start_offset = 0
 
 def load_model_weights(
     model_scaffold: torch.nn.Module,
@@ -75,124 +33,60 @@ def load_model_weights(
         return None
 
 
-kv_cache:list[tuple[torch.tensor, torch.tensor]] = []
+# ----------------------------------------------------------------------
 
-
-@torch.inference_mode()
-def advanced_inference(
-    model_scaffold: torch.nn.Module,
-    configs: Dict[str, Any],
-    max_new_tokens: int,
-    prompt: str,
-    device: Union[str, torch.device],
-    temperature: float = 1.0,
-    top_k: Optional[int] = 50,
-    top_p: Optional[float] = None,
-    eos_token_id: Optional[int] = None,
-) -> str:
-    max_seq_len = configs["max_seq_len"]
-
-    prompt_ids = ID_mapper.encode(prompt)
-    if not prompt_ids:
-        raise ValueError("[ERR] Prompt produced no tokens.")
-
-    model = load_model_weights(model_scaffold, configs["save_path"], device)
-    if model is None:
-        raise RuntimeError("Failed to load model checkpoint.")
-
-    kv_cache = KVCache()
-    full_seq = list(prompt_ids)
-
-    # ---------- PREFILL ----------
-    prefill_ids = full_seq[-max_seq_len:]
-    last_logits = prefill(model, prefill_ids, kv_cache, device)
-    kv_cache.seq_len = len(prefill_ids)          # ≤ max_seq_len
-    # start_offset is still 0
-
-    next_token = sample(last_logits, temperature, top_k, top_p).item()
-
-    # ---------- DECODE ----------
-    for _ in range(max_new_tokens):
-        if eos_token_id is not None and next_token == eos_token_id:
-            break
-
-        # 1. Append the newly generated token
-        full_seq.append(next_token)
-
-        # 2. Truncate FIRST (before calling the model)
-        if len(full_seq) > max_seq_len:
-            full_seq = full_seq[-max_seq_len:]
-            kv_cache.truncate(max_seq_len)        # updates seq_len and start_offset
-
-        # 3. Now the cache is guaranteed to have space / correct offset
-        logits = decode(model, next_token, kv_cache, device)
-        next_token = sample(logits, temperature, top_k, top_p).item()
-
-    return ID_mapper.decode(full_seq)
-
-def prefill(model, prompt_tokens, kv_cache, device):
-    input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=device)
-    logits = model(
-        input_ids,
-        kv_cache=kv_cache,
-        start_pos=kv_cache.start_offset,          # normally 0
-    )
-    return logits[:, -1, :]
-
-
-def decode(model, next_token_id, kv_cache, device):
-    input_id = torch.tensor([[next_token_id]], dtype=torch.long, device=device)
-
-    # After possible truncation, seq_len is already the length *before*
-    # adding the new token. So the new token’s absolute position is:
-    start_pos = kv_cache.start_offset + kv_cache.seq_len
-
-    logits = model(
-        input_id,
-        kv_cache=kv_cache,
-        start_pos=start_pos,
-    )
-    kv_cache.seq_len += 1
-    return logits[:, -1, :]
-
-
-def sample(
+def sample_next_token_from_logits(
     logits: torch.Tensor,
     temperature: float = 1.0,
     top_k: Optional[int] = 50,
     top_p: Optional[float] = None,
 ) -> torch.Tensor:
-    if logits.dim() > 1:
-        logits = logits.squeeze(0)
-
-    if temperature <= 0.0:
+    """
+    Applies temperature scaling, top-k filtering, and top-p (nucleus) sampling.
+    Input Shape:  [B, Vocab_Size]
+    Output Shape: [B, 1]
+    """
+    if temperature == 0.0:
+        # Greedy decoding
         return torch.argmax(logits, dim=-1, keepdim=True)
 
-    logits = logits / max(temperature, 1e-6)
+    # 1. Apply Temperature
+    logits = logits / temperature
 
-    # Top-k
+    # 2. Top-K Filtering
     if top_k is not None and top_k > 0:
-        top_k = min(top_k, logits.size(-1))
-        threshold = torch.topk(logits, top_k)[0][..., -1, None]
-        logits = logits.masked_fill(logits < threshold, float("-inf"))
-
-    # Top-p (nucleus)
-    if top_p is not None and 0.0 < top_p < 1.0:
-        sorted_logits, sorted_idx = torch.sort(logits, descending=True)
-        cumulative = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-
-        mask = cumulative > top_p
-        mask[..., 1:] = mask[..., :-1].clone()
-        mask[..., 0] = False
-
-        logits[sorted_idx[mask]] = float("-inf")
-
-    probs = F.softmax(logits, dim=-1)
-    return torch.multinomial(probs, num_samples=1)
+        indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+        logits = logits.masked_fill(indices_to_remove, float('-inf'))
 
 
+    # 3. Top-P (Nucleus) Filtering
+    if top_p is not None and top_p < 1.0:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+        # Remove tokens with cumulative probability above the threshold
+        sorted_indices_to_remove = cumulative_probs > top_p
+        # Shift mask right to keep the first token above top_p
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = False
+
+        # Scatter removed indices back to original tensor positions
+        indices_to_remove = sorted_indices_to_remove.scatter(
+            dim=-1, index=sorted_indices, src=sorted_indices_to_remove
+        )
+        logits = logits.masked_fill(indices_to_remove, float('-inf'))
 
 
+        # 4. Sample from Categorical Distribution
+        probs = F.softmax(logits, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1)            # [B, 1]
+        return next_token
+
+
+# ----------------------------------------------------------------------
+
+
+#TODO: simplify by using sample_next_token_from_logits
 @torch.inference_mode()
 def simple_inference(model_scaffold:torch.nn.Module, 
                                configs, 
@@ -283,3 +177,123 @@ def simple_inference(model_scaffold:torch.nn.Module,
 
 
 
+# ----------------------------------------------------------------------
+
+# preallocated cache 
+
+# Fixed absolute position:
+#     max total sequence length = max_context_window
+#     KV cache can simply grow until that limit
+@torch.inference_mode()
+def advanced_inference_context_window_limited(
+    model_scaffold: torch.nn.Module,
+    configs: Dict[str, Any],
+    num_get_steps: int,
+    prompt_strs: list[str],
+    device: Union[str, torch.device],
+    temperature: float = 0.6,
+    top_k: Optional[int] = 50,
+    top_p: Optional[float] = 0.9,
+    eos_token_id: Optional[int] = None,
+) -> torch.Tensor:
+
+    """
+    used for models that have fixed positional encoding and cannot extend their generated seq
+    beyond the max_context_window
+
+    Autoregressive generation split into two distinct stages:
+    1. Prefill Stage: Process all prompt tokens at once, populating the KV cache.
+    2. Decode Stage: Process tokens step-by-step (1 token input per step) using cached KV pairs.
+    
+    prompt_tokens Shape: [B, Prompt_Len]
+    Output Shape:        [B, Prompt_Len + Generated_Len]
+
+    sliding-window KV context 
+    """
+
+
+    tensorized_prompts = [
+        torch.tensor(
+            ID_mapper.encode(prompt),
+            dtype=torch.long,
+        )
+        for prompt in prompt_strs
+    ]
+
+    prompts = torch.stack(tensorized_prompts) # [batch_size, seq_len]
+
+
+    # loaded_model = load_model_weights(model_scaffold, configs["save_path"], device)
+
+    # loaded_model.eval() # affects batch_norm or dropout
+
+
+    # a tensor for progressively appending our generated predictions to.
+    # full_seq_tensor = prompt + generated tokens
+    # full_seq_tensor = prompt
+
+
+
+    # prefill
+
+    # decode
+
+    decoded_list = []
+    for seq in prompts:
+        token_ids = seq.tolist()
+        decoded_list.append(
+            ID_mapper.decode(token_ids)
+        )
+    return decoded_list
+
+
+    
+
+# ----------------------------------------------------------------------
+
+
+# Ring-buffer
+
+@dataclass
+class KV_cache():
+    ...
+
+
+# RoPE + sliding window:
+#     total generated length can exceed max_context_window
+#     KV cache keeps only the newest W tokens
+#     position IDs continue increasing
+# cache_mode=full -> keeps the KV cache for total seq
+@torch.inference_mode()
+def advanced_inference(
+    model_scaffold: torch.nn.Module,
+    configs: Dict[str, Any],
+    num_get_steps: int,
+    prompt_strs: list[str],
+    device: Union[str, torch.device],
+    cache_mode: str = "sliding_window",
+    temperature: float = 0.6,
+    top_k: Optional[int] = 50,
+    top_p: Optional[float] = 0.9,
+    eos_token_id: Optional[int] = None,
+) -> torch.Tensor:
+
+    ...
+
+    # ID_map prompts & stack
+
+    # load model
+
+    # manage KV: 
+
+    # sample 
+
+    # de-ID the seq
+
+
+    #---
+    
+    # prefill()
+
+    # for gen_step in num_get_steps-1:
+    #    decode()
