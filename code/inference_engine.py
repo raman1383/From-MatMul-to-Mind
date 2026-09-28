@@ -177,74 +177,6 @@ def simple_inference(model_scaffold:torch.nn.Module,
 
 
 
-# ----------------------------------------------------------------------
-
-# preallocated cache 
-
-# Fixed absolute position:
-#     max total sequence length = max_context_window
-#     KV cache can simply grow until that limit
-@torch.inference_mode()
-def advanced_inference_context_window_limited(
-    model_scaffold: torch.nn.Module,
-    configs: Dict[str, Any],
-    num_get_steps: int,
-    prompt_strs: list[str],
-    device: Union[str, torch.device],
-    temperature: float = 0.6,
-    top_k: Optional[int] = 50,
-    top_p: Optional[float] = 0.9,
-    eos_token_id: Optional[int] = None,
-) -> torch.Tensor:
-
-    """
-    used for models that have fixed positional encoding and cannot extend their generated seq
-    beyond the max_context_window
-
-    Autoregressive generation split into two distinct stages:
-    1. Prefill Stage: Process all prompt tokens at once, populating the KV cache.
-    2. Decode Stage: Process tokens step-by-step (1 token input per step) using cached KV pairs.
-    
-    prompt_tokens Shape: [B, Prompt_Len]
-    Output Shape:        [B, Prompt_Len + Generated_Len]
-
-    sliding-window KV context 
-    """
-
-
-    tensorized_prompts = [
-        torch.tensor(
-            ID_mapper.encode(prompt),
-            dtype=torch.long,
-        )
-        for prompt in prompt_strs
-    ]
-
-    prompts = torch.stack(tensorized_prompts) # [batch_size, seq_len]
-
-
-    # loaded_model = load_model_weights(model_scaffold, configs["save_path"], device)
-
-    # loaded_model.eval() # affects batch_norm or dropout
-
-
-    # a tensor for progressively appending our generated predictions to.
-    # full_seq_tensor = prompt + generated tokens
-    # full_seq_tensor = prompt
-
-
-
-    # prefill
-
-    # decode
-
-    decoded_list = []
-    for seq in prompts:
-        token_ids = seq.tolist()
-        decoded_list.append(
-            ID_mapper.decode(token_ids)
-        )
-    return decoded_list
 
 
     
@@ -278,22 +210,45 @@ def advanced_inference(
     eos_token_id: Optional[int] = None,
 ) -> torch.Tensor:
 
-    ...
+    
+    """
+    used for models that have fixed positional encoding and cannot extend their generated seq
+    beyond the max_context_window
 
-    # ID_map prompts & stack
+    Autoregressive generation split into two distinct stages:
+    1. Prefill Stage: Process all prompt tokens at once, populating the KV cache.
+    2. Decode Stage: Process tokens step-by-step (1 token input per step) using cached KV pairs.
+    
+    prompt_tokens Shape: [B, Prompt_Len]
+    Output Shape:        [B, Prompt_Len + Generated_Len]
+
+    sliding-window KV context 
+    """
+
+
+    tensorized_prompts = [
+        torch.tensor(
+            ID_mapper.encode(prompt),
+            dtype=torch.long,
+        )
+        for prompt in prompt_strs
+    ]
+
+    prompts = torch.stack(tensorized_prompts) # [batch_size, seq_len]
+
 
     # load model
 
-    # manage KV: 
-
-    # sample 
-
-    # de-ID the seq
-
-
-    #---
-    
     # prefill()
 
     # for gen_step in num_get_steps-1:
     #    decode()
+
+
+    decoded_list = []
+    for seq in prompts:
+        token_ids = seq.tolist()
+        decoded_list.append(
+            ID_mapper.decode(token_ids)
+        )
+    return decoded_list
