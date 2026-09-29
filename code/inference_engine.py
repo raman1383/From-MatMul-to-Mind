@@ -1,10 +1,10 @@
 import os
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
-
 import torch
+from typing import Optional
 import torch.nn.functional as F
 from einops import rearrange, pack
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from tokenizerModule import ID_mapper
 
@@ -35,6 +35,7 @@ def load_model_weights(
 
 # ----------------------------------------------------------------------
 
+
 def sample_next_token_from_logits(
     logits: torch.Tensor,
     temperature: float = 1.0,
@@ -42,140 +43,269 @@ def sample_next_token_from_logits(
     top_p: Optional[float] = None,
 ) -> torch.Tensor:
     """
-    Applies temperature scaling, top-k filtering, and top-p (nucleus) sampling.
-    Input Shape:  [B, Vocab_Size]
-    Output Shape: [B, 1]
+    Sample one next token from logits.
+
+    Input:
+        logits: [B, Vocab_Size]
+
+    Output:
+        next_token: [B, 1]
     """
+
+    if logits.ndim != 2:
+        raise ValueError(
+            f"logits must have shape [B, V], got {tuple(logits.shape)}"
+        )
+
+    if temperature < 0:
+        raise ValueError("temperature must be non-negative")
+
     if temperature == 0.0:
         # Greedy decoding
         return torch.argmax(logits, dim=-1, keepdim=True)
 
-    # 1. Apply Temperature
+    if top_k is not None:
+        if top_k <= 0:
+            raise ValueError("top_k must be positive or None")
+        top_k = min(top_k, logits.shape[-1])
+
+    if top_p is not None:
+        if not 0.0 < top_p <= 1.0:
+            raise ValueError("top_p must be in (0, 1] or None")
+
+    # 1. Temperature scaling
     logits = logits / temperature
 
-    # 2. Top-K Filtering
-    if top_k is not None and top_k > 0:
-        indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
-        logits = logits.masked_fill(indices_to_remove, float('-inf'))
+    # 2. Top-k filtering
+    if top_k is not None:
+        kth_value = torch.topk(logits, top_k, dim=-1).values[..., -1, None]
+        logits = logits.masked_fill(logits < kth_value, float("-inf"))
 
-
-    # 3. Top-P (Nucleus) Filtering
+    # 3. Top-p filtering
     if top_p is not None and top_p < 1.0:
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
-        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+        sorted_logits, sorted_indices = torch.sort(
+            logits,
+            descending=True,
+            dim=-1,
+        )
 
-        # Remove tokens with cumulative probability above the threshold
+        sorted_probs = F.softmax(sorted_logits, dim=-1)
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+
         sorted_indices_to_remove = cumulative_probs > top_p
-        # Shift mask right to keep the first token above top_p
-        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+
+        # Keep the first token that crosses the threshold.
+        sorted_indices_to_remove[..., 1:] = (
+            sorted_indices_to_remove[..., :-1].clone()
+        )
         sorted_indices_to_remove[..., 0] = False
 
-        # Scatter removed indices back to original tensor positions
-        indices_to_remove = sorted_indices_to_remove.scatter(
-            dim=-1, index=sorted_indices, src=sorted_indices_to_remove
+        indices_to_remove = torch.zeros_like(sorted_indices_to_remove)
+        indices_to_remove.scatter_(
+            dim=-1,
+            index=sorted_indices,
+            src=sorted_indices_to_remove,
         )
-        logits = logits.masked_fill(indices_to_remove, float('-inf'))
 
+        logits = logits.masked_fill(
+            indices_to_remove,
+            float("-inf"),
+        )
 
-        # 4. Sample from Categorical Distribution
-        probs = F.softmax(logits, dim=-1)
-        next_token = torch.multinomial(probs, num_samples=1)            # [B, 1]
-        return next_token
+    # 4. Convert to probabilities and sample
+    probabilities = F.softmax(logits, dim=-1)
 
+    return torch.multinomial(
+        probabilities,
+        num_samples=1,
+    )
 
 # ----------------------------------------------------------------------
 
 
-#TODO: simplify by using sample_next_token_from_logits
+
 @torch.inference_mode()
-def simple_inference(model_scaffold:torch.nn.Module, 
-                               configs, 
-                               num_gen_steps: int, 
-                               prompt: str, 
-                               device, 
-                               temperature: float
-                               ) -> str:
+def batched_simple_inference(
+    model_scaffold: torch.nn.Module,
+    configs,
+    num_get_steps: int,
+    prompt_strs: list[str],
+    device,
+    temperature: float = 1.0,
+    top_k: Optional[int] = 50,
+    top_p: Optional[float] = None,
+) -> list[str]:
+    """
+    Generate `num_get_steps` tokens for every prompt.
 
-    print(f"[INFO] Starting inference with prompt: {prompt}")
+    All prompt strings must tokenize to the same sequence length.
 
-    if num_gen_steps < 0:
-        raise ValueError("[ERR] num_gen_steps must be non-negative")
+    Input:
+        prompt_strs: list[str]
+
+    Returns:
+        list[str]
+        Each output string contains its original prompt plus
+        `num_get_steps` generated tokens.
+    """
+
+    if num_get_steps < 0:
+        raise ValueError("num_get_steps must be non-negative")
 
     if temperature < 0:
-        raise ValueError("[ERR] temperature must be non-negative")
+        raise ValueError("temperature must be non-negative")
 
-    prompt_to_IDs = ID_mapper.encode(prompt)
-    if len(prompt_to_IDs) == 0:
-        raise ValueError("[ERR] Prompt produced no tokens. Provide a non-empty prompt.")
+    if len(prompt_strs) == 0:
+        raise ValueError("prompt_strs must contain at least one prompt")
 
-    loaded_model = load_model_weights(model_scaffold, configs["save_path"], device)
+    # ------------------------------------------------------------
+    # 1. Encode every prompt
+    # ------------------------------------------------------------
 
+    tensorized_prompts = [
+        torch.tensor(
+            ID_mapper.encode(prompt),
+            dtype=torch.long,
+        )
+        for prompt in prompt_strs
+    ]
 
-    # a list for progressively appending our generated predictions to.
-    # full_seq = prompt + generated tokens
-    full_seq = list(prompt_to_IDs)
+    # All prompts must have identical token lengths
+    prompt_lengths = [tensor.shape[0] for tensor in tensorized_prompts]
+
+    if len(set(prompt_lengths)) != 1:
+        raise ValueError(
+            f"All prompts must have the same token length, "
+            f"got lengths: {prompt_lengths}"
+        )
+
+    # [B, seq_len]
+    prompts = torch.stack(tensorized_prompts).to(device)
+
+    # print("prompts.shape ->", prompts.shape)
+
+    # ------------------------------------------------------------
+    # 2. Load model
+    # ------------------------------------------------------------
+
+    loaded_model = load_model_weights(
+        model_scaffold,
+        configs["save_path"],
+        device,
+    )
 
     loaded_model.eval()
-    with torch.no_grad():
-        for step in range(num_gen_steps):
 
-            print(f"full_seq before {step+1}/{num_gen_steps}:")
-            print(full_seq)
+    # This tensor will grow autoregressively:
+    #
+    # [B, prompt_len]
+    #      ↓
+    # [B, prompt_len + 1]
+    #      ↓
+    # [B, prompt_len + 2]
+    #      ...
+    generated_sequences = prompts
 
-            # clip long sequences to fit training context window
-            context_window_limited_seq = full_seq[-configs["max_seq_len"] :]
+    # ------------------------------------------------------------
+    # 3. Autoregressive generation
+    # ------------------------------------------------------------
 
-            # convert to torch.tensor
-            # (batch_size=1, seq_len=len(context_window_limited_seq))
-            context_window_limited_seq_tensor = torch.tensor(
-                [context_window_limited_seq], 
-                device=device, 
-                dtype=torch.long
-            )
-            print("context_window_limited_seq_tensor.shape-> ")
-            print(context_window_limited_seq_tensor.shape)
-            print(f"[INFO] Step {step+1}/{num_gen_steps}: Context window length: {context_window_limited_seq_tensor.shape[1]}")
+    for step in range(num_get_steps):
 
-            # (batch_size=1, seq_len=len(context_window_limited_seq), vocab_size)
-            model_output_logits = loaded_model(context_window_limited_seq_tensor)
-            print("model_output_logits.shape->")
-            print(model_output_logits.shape)
+        # print(
+        #     f"[INFO] Generation step "
+        #     f"{step + 1}/{num_get_steps}"
+        # )
 
-            # extract the logits for ONLY the final token position in the sequence
-            last_token_logits = rearrange(model_output_logits[:, -1, :], "1 vocab_size -> vocab_size")
-            print("last_token_logits.shape->")
-            print(last_token_logits.shape)
+        # Keep only the portion that fits in the model's
+        # training context window.
+        context_window_limited_sequences = (
+            generated_sequences[:, -configs["max_seq_len"]:]
+        )
 
-            # temperature controls the sharpness of the distribution
-            tempered_logits = last_token_logits / max(temperature, 1e-6)
+        # print(
+        #     "context_window_limited_sequences.shape ->",
+        #     context_window_limited_sequences.shape,
+        # )
 
-            # convert to probability distribution
-            probabilities = torch.softmax(tempered_logits, dim=-1)
-            print("probabilities.shape-> ")
-            print(probabilities.shape)
+        # --------------------------------------------------------
+        # [B, seq_len] -> [B, seq_len, vocab_size]
+        # --------------------------------------------------------
 
-            print("probabilities-> ")
-            print(probabilities)
+        model_output_logits = loaded_model(
+            context_window_limited_sequences
+        )
 
-            # multinomial sampling
-            next_token_tensor = torch.multinomial(probabilities, num_samples=1)
-            print("next_token_tensor.shape-> ")
-            print(next_token_tensor.shape)
-            print("next_token_tensor-> ")
-            print(next_token_tensor)
-            next_token = next_token_tensor.item()
+        # print(
+        #     "model_output_logits.shape ->",
+        #     model_output_logits.shape,
+        # )
 
-            # Append predicted token to sequence for the next autoregressive loop step
-            full_seq.append(next_token)
-            print("full_seq.append after append: ")
-            print(full_seq)
-            print("-"*80)
+        # We only care about the logits for the final position.
+        #
+        # [B, seq_len, V]
+        #        ↓
+        # [B, V]
+        last_token_logits = model_output_logits[:, -1, :]
 
+        # print(
+        #     "last_token_logits.shape ->",
+        #     last_token_logits.shape,
+        # )
 
-    return ID_mapper.decode(full_seq)
+        # --------------------------------------------------------
+        # Sample one token PER prompt
+        #
+        # [B, V] -> [B, 1]
+        # --------------------------------------------------------
 
+        next_token = sample_next_token_from_logits(
+            logits=last_token_logits,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+        )
 
+        # print(
+        #     "next_token.shape ->",
+        #     next_token.shape,
+        # )
 
+        # --------------------------------------------------------
+        # Append one generated token to every sequence
+        #
+        # [B, S] + [B, 1]
+        #        ↓
+        # [B, S + 1]
+        # --------------------------------------------------------
+
+        generated_sequences = torch.cat(
+            [
+                generated_sequences,
+                next_token,
+            ],
+            dim=-1,
+        )
+
+        # print(
+        #     "generated_sequences.shape ->",
+        #     generated_sequences.shape,
+        # )
+
+    # ------------------------------------------------------------
+    # 4. Convert each generated token sequence back to a string
+    # ------------------------------------------------------------
+
+    decoded_list = []
+
+    for sequence in generated_sequences:
+        token_ids = sequence.tolist()
+
+        decoded_list.append(
+            ID_mapper.decode(token_ids)
+        )
+
+    return decoded_list
 
 
 
@@ -188,6 +318,18 @@ def simple_inference(model_scaffold:torch.nn.Module,
 
 @dataclass
 class KV_cache():
+    """Pre-allocated, fixed-size KV cache for one layer."""
+    def __init__():
+        ...
+
+    def reset(self):
+        # No need to zero memory — just rewind the pointer.
+        # Stale data past seq_len gets overwritten before it's ever read.
+        self.seq_len = 0
+
+
+    def update(self, k_new, v_new):
+        """k_new/v_new: (batch, n_kv_heads, new_tokens, head_dim)"""
     ...
 
 
