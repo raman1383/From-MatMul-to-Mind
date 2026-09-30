@@ -20,7 +20,7 @@ def train_and_save_model(model:torch.nn.Module, configs:dict, device, training_s
     trainer_loader = BatchLoader(
         train=True,
         batch_size=configs["max_training_batch_size"],
-        max_seq_len=configs["max_seq_len"],
+        max_seq_len=configs["max_context_window"],
         device=device,
     )
 
@@ -139,7 +139,7 @@ def plot_loss_history(config):
 
 
 
-def inspect_weight_file(weight_file_path: str, print_weights: bool):
+def inspect_weight_file(weight_file_path: str, print_weights: bool=False):
 
     weight_file_path = Path(weight_file_path)
     if not weight_file_path.exists():

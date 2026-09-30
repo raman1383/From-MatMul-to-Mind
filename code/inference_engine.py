@@ -345,7 +345,7 @@ class KV_cache:
 
 
         shape = (self.num_layers, 
-                 self.batch_size, 
+                 self.inference_batch_size, 
                  self.num_kv_heads, 
                  self.max_context_window, 
                  self.head_dim
@@ -354,8 +354,8 @@ class KV_cache:
         self.keys   = torch.zeros(shape, device=device, dtype=dtype)
         self.values = torch.zeros(shape, device=device, dtype=dtype)
 
-        self.position = 0  # absolute position counter
-        self.seq_len  = 0
+        self.position = 0  # absolute position counter(grows forever)
+        self.seq_len  = 0  # how many slots are currently filled
 
     def update(
         self,
@@ -408,12 +408,13 @@ class KV_cache:
 
 
 
-
+# disables gradient recording and removes additional 
+# autograd overhead such as version-counter/view tracking.
 @torch.inference_mode()
 def advanced_inference(
     model_scaffold: torch.nn.Module,
     configs: Dict[str, Any],
-    num_get_steps: int,
+    num_gen_steps: int,
     prompt_strs: list[str],
     device: Union[str, torch.device],
     temperature: float = 0.6,
@@ -424,17 +425,11 @@ def advanced_inference(
 
     
     """
-    used for models that have fixed positional encoding and cannot extend their generated seq
-    beyond the max_context_window
 
     Autoregressive generation split into two distinct stages:
-    1. Prefill Stage: Process all prompt tokens at once, populating the KV cache.
-    2. Decode Stage: Process tokens step-by-step (1 token input per step) using cached KV pairs.
+        1. Prefill Stage: Process all prompt tokens at once, populating the KV cache.
+        2. Decode Stage: Process tokens step-by-step (1 token input per step).
     
-    prompt_tokens Shape: [B, Prompt_Len]
-    Output Shape:        [B, Prompt_Len + Generated_Len]
-
-    sliding-window KV context 
     """
 
     # pre-allocate a max_context_len sized pair torch.tensor, 
@@ -450,23 +445,44 @@ def advanced_inference(
 
     prompts = torch.stack(tensorized_prompts) # [batch_size, seq_len]
 
+    batch_size, seq_len = prompts.shape[0], prompts.shape[1]
 
-    with torch.no_grad():
 
-        ...
+    model = load_model_weights(
+        model_scaffold,
+        configs["save_path"],
+        device,
+    )
 
-    # load model
+    model.eval()
 
-    # prefill()
+    cache = KV_cache(configs)
 
-    # for gen_step in num_get_steps-1:
-    #    decode()
+    # Prefill
+    logits = model(prompts, cache=cache)
+    next_token = sample_next_token_from_logits(logits[:, -1:], temperature, top_k)
+    generated = [next_token]
 
+
+    # Decode – can run for any number of steps
+    for _ in range(num_gen_steps - 1):
+
+        logits = model(next_token, cache=cache)
+        next_token = sample_next_token_from_logits(logits[:, -1:], temperature, top_k)
+        generated.append(next_token)
+
+        if eos_token_id is not None and (next_token == eos_token_id).all():
+            break
+
+
+    cache.reset()
 
     decoded_list = []
-    for seq in prompts:
+
+    for seq in generated:
         token_ids = seq.tolist()
         decoded_list.append(
             ID_mapper.decode(token_ids)
         )
+
     return decoded_list
