@@ -314,30 +314,101 @@ def batched_simple_inference(
 # ----------------------------------------------------------------------
 
 
-# Ring-buffer
+class KV_cache:
+    """
+    Static pre-allocated KV cache with sliding-window support.
+    Fully compatible with MHA / GQA / MQA / SHA.
+    
+    [num_layers, batch, num_kv_heads, max_context_window, head_dim]
 
-@dataclass
-class KV_cache():
-    """Pre-allocated, fixed-size KV cache for one layer."""
-    def __init__():
-        ...
+    The attention module is responsible for expanding KV heads
+    to match num_q_heads (repeat_interleave) when necessary.
+    """
+
+    def __init__(
+        self,
+        config: dict,
+        inference_batch_size:int = 1,
+        device: torch.device = 'cuda',
+        dtype: torch.dtype = torch.float16,
+
+    ):
+        self.max_context_window   = config["max_context_window"]
+        self.inference_batch_size = inference_batch_size
+
+        self.head_dim     = config["embed_dim"] // config["num_q_heads"]
+        self.num_kv_heads = config["num_kv_heads"]
+        self.num_layers   = config["num_layers"]
+
+        self.device = device
+        self.dtype  = dtype
+
+
+        shape = (self.num_layers, 
+                 self.batch_size, 
+                 self.num_kv_heads, 
+                 self.max_context_window, 
+                 self.head_dim
+        )
+
+        self.keys   = torch.zeros(shape, device=device, dtype=dtype)
+        self.values = torch.zeros(shape, device=device, dtype=dtype)
+
+        self.position = 0  # absolute position counter
+        self.seq_len  = 0
+
+    def update(
+        self,
+        layer_idx: int,
+        key: torch.Tensor,         # [B, num_kv_heads, q_len, head_dim] (RoPE already applied)
+        value: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        q_len = key.shape[2]
+
+        if self.seq_len + q_len > self.max_context_window:
+            self._shift(q_len)
+
+        start, end = self.seq_len, self.seq_len + q_len
+        self.keys  [layer_idx, :, :, start:end, :] = key
+        self.values[layer_idx, :, :, start:end, :] = value
+
+        if layer_idx == 0:
+            self.seq_len  = end
+            self.position += q_len
+
+        return self.get(layer_idx)
+
+    def get(self, layer_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        usable = min(self.seq_len, self.context_window)
+        start  = self.seq_len - usable
+
+        return (
+            self.keys  [layer_idx, :, :, start:self.seq_len, :],
+            self.values[layer_idx, :, :, start:self.seq_len, :],
+        )
+
+    def _shift(self, incoming: int):
+        keep = max(0, self.max_context_window - incoming)
+        if keep > 0:
+            self.keys  [..., :keep, :] = self.keys  [..., self.seq_len-keep:self.seq_len, :].clone()
+            self.values[..., :keep, :] = self.values[..., self.seq_len-keep:self.seq_len, :].clone()
+        self.seq_len = keep
 
     def reset(self):
         # No need to zero memory — just rewind the pointer.
-        # Stale data past seq_len gets overwritten before it's ever read.
-        self.seq_len = 0
+        # Stale data past max_context_window gets over-written.
+        self.seq_len  = 0
+        self.position = 0
+
+    @property
+    def current_abs_pos(self) -> int:
+        return self.position
 
 
-    def update(self, k_new, v_new):
-        """k_new/v_new: (batch, n_kv_heads, new_tokens, head_dim)"""
-    ...
 
 
-# RoPE + sliding window:
-#     total generated length can exceed max_context_window
-#     KV cache keeps only the newest W tokens
-#     position IDs continue increasing
-# cache_mode=full -> keeps the KV cache for total seq
 @torch.inference_mode()
 def advanced_inference(
     model_scaffold: torch.nn.Module,
@@ -345,7 +416,6 @@ def advanced_inference(
     num_get_steps: int,
     prompt_strs: list[str],
     device: Union[str, torch.device],
-    cache_mode: str = "sliding_window",
     temperature: float = 0.6,
     top_k: Optional[int] = 50,
     top_p: Optional[float] = 0.9,
@@ -367,6 +437,8 @@ def advanced_inference(
     sliding-window KV context 
     """
 
+    # pre-allocate a max_context_len sized pair torch.tensor, 
+
 
     tensorized_prompts = [
         torch.tensor(
@@ -378,6 +450,10 @@ def advanced_inference(
 
     prompts = torch.stack(tensorized_prompts) # [batch_size, seq_len]
 
+
+    with torch.no_grad():
+
+        ...
 
     # load model
 

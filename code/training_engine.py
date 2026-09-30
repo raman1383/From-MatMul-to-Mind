@@ -19,7 +19,7 @@ def train_and_save_model(model:torch.nn.Module, configs:dict, device, training_s
 
     trainer_loader = BatchLoader(
         train=True,
-        batch_size=configs["batch_size"],
+        batch_size=configs["max_training_batch_size"],
         max_seq_len=configs["max_seq_len"],
         device=device,
     )
