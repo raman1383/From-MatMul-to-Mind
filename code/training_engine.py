@@ -126,10 +126,10 @@ def plot_loss_history(config):
 
 
     plt.figure(figsize=(10, 5))
-    plt.plot(loss_history, color='#00FFCC', label='Bigram Training Loss')
+    plt.plot(loss_history, color='#00FFCC', label=f'{config["model_name"]} Training Loss')
     plt.axhline(y=torch.log(torch.tensor(config["vocab_size"])).item(), color='red', linestyle='--', 
                 label=f'Theoretical Random Loss ln({config["vocab_size"]}) ≈ {math.log(config["vocab_size"]):.4f})')
-    plt.title("Level 1 Loss Reduction Chronicle (TinyStories Dataset)")
+    plt.title("Loss Plot (TinyStories Dataset)")
     plt.xlabel("Step")
     plt.ylabel("Cross-Entropy Loss (Nats)")
     plt.style.use('dark_background')

@@ -128,7 +128,7 @@ def sample_next_token_from_logits(
 def batched_simple_inference(
     model_scaffold: torch.nn.Module,
     configs,
-    num_get_steps: int,
+    num_gen_steps: int,
     prompt_strs: list[str],
     device,
     temperature: float = 1.0,
@@ -136,7 +136,7 @@ def batched_simple_inference(
     top_p: Optional[float] = None,
 ) -> list[str]:
     """
-    Generate `num_get_steps` tokens for every prompt.
+    Generate `num_gen_steps` tokens for every prompt.
 
     All prompt strings must tokenize to the same sequence length.
 
@@ -149,7 +149,7 @@ def batched_simple_inference(
         `num_get_steps` generated tokens.
     """
 
-    if num_get_steps < 0:
+    if num_gen_steps < 0:
         raise ValueError("num_get_steps must be non-negative")
 
     if temperature < 0:
@@ -210,7 +210,7 @@ def batched_simple_inference(
     # 3. Autoregressive generation
     # ------------------------------------------------------------
 
-    for step in range(num_get_steps):
+    for step in range(num_gen_steps):
 
         # print(
         #     f"[INFO] Generation step "
@@ -220,7 +220,7 @@ def batched_simple_inference(
         # Keep only the portion that fits in the model's
         # training context window.
         context_window_limited_sequences = (
-            generated_sequences[:, -configs["max_seq_len"]:]
+            generated_sequences[:, -configs["max_context_window"]:]
         )
 
         # print(
@@ -313,7 +313,7 @@ def batched_simple_inference(
 
 # ----------------------------------------------------------------------
 
-
+# @dataclass
 class KV_cache:
     """
     Static pre-allocated KV cache with sliding-window support.
@@ -363,25 +363,27 @@ class KV_cache:
         key: torch.Tensor,         # [B, num_kv_heads, q_len, head_dim] (RoPE already applied)
         value: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-
+        
         q_len = key.shape[2]
-
-        if self.seq_len + q_len > self.max_context_window:
+        
+        if layer_idx == 0 and self.seq_len + q_len > self.max_context_window:
             self._shift(q_len)
 
         start, end = self.seq_len, self.seq_len + q_len
         self.keys  [layer_idx, :, :, start:end, :] = key
         self.values[layer_idx, :, :, start:end, :] = value
 
-        if layer_idx == 0:
-            self.seq_len  = end
+        if layer_idx == self.num_layers - 1:      # advance once per forward pass
+            self.seq_len   = end
             self.position += q_len
 
-        return self.get(layer_idx)
+        return (self.keys  [layer_idx, :, :, :end, :],
+                self.values[layer_idx, :, :, :end, :])
+
 
     def get(self, layer_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        usable = min(self.seq_len, self.context_window)
+        usable = min(self.seq_len, self.max_context_window)
         start  = self.seq_len - usable
 
         return (
@@ -389,12 +391,14 @@ class KV_cache:
             self.values[layer_idx, :, :, start:self.seq_len, :],
         )
 
+
     def _shift(self, incoming: int):
         keep = max(0, self.max_context_window - incoming)
         if keep > 0:
             self.keys  [..., :keep, :] = self.keys  [..., self.seq_len-keep:self.seq_len, :].clone()
             self.values[..., :keep, :] = self.values[..., self.seq_len-keep:self.seq_len, :].clone()
         self.seq_len = keep
+
 
     def reset(self):
         # No need to zero memory — just rewind the pointer.
@@ -421,7 +425,7 @@ def advanced_inference(
     top_k: Optional[int] = 50,
     top_p: Optional[float] = 0.9,
     eos_token_id: Optional[int] = None,
-) -> torch.Tensor:
+) -> list[str]:
 
     
     """
@@ -443,7 +447,7 @@ def advanced_inference(
         for prompt in prompt_strs
     ]
 
-    prompts = torch.stack(tensorized_prompts) # [batch_size, seq_len]
+    prompts = torch.stack(tensorized_prompts).to(device) # [batch_size, seq_len]
 
     batch_size, seq_len = prompts.shape[0], prompts.shape[1]
 
@@ -456,11 +460,11 @@ def advanced_inference(
 
     model.eval()
 
-    cache = KV_cache(configs)
+    cache = KV_cache(configs, device=device, inference_batch_size=batch_size, dtype=next(model.parameters()).dtype)
 
     # Prefill
     logits = model(prompts, cache=cache)
-    next_token = sample_next_token_from_logits(logits[:, -1:], temperature, top_k)
+    next_token = sample_next_token_from_logits(logits[:, -1, :], temperature, top_k, top_p)
     generated = [next_token]
 
 
@@ -468,7 +472,7 @@ def advanced_inference(
     for _ in range(num_gen_steps - 1):
 
         logits = model(next_token, cache=cache)
-        next_token = sample_next_token_from_logits(logits[:, -1:], temperature, top_k)
+        next_token = sample_next_token_from_logits(logits[:, -1, :], temperature, top_k)
         generated.append(next_token)
 
         if eos_token_id is not None and (next_token == eos_token_id).all():
@@ -477,12 +481,7 @@ def advanced_inference(
 
     cache.reset()
 
-    decoded_list = []
-
-    for seq in generated:
-        token_ids = seq.tolist()
-        decoded_list.append(
-            ID_mapper.decode(token_ids)
-        )
-
+    generated = torch.cat(generated, dim=1)          # [B, num_gen_steps]
+    decoded_list = [ID_mapper.decode(row.tolist()) for row in generated]
+    
     return decoded_list
