@@ -8,19 +8,21 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from einops import rearrange
 
+from model_config import ModelConfig
 
-def train_and_save_model(model:torch.nn.Module, configs:dict, device, training_steps:int):
+
+def train_and_save_model(model:torch.nn.Module, configs:ModelConfig, device, training_steps:int):
 
     loss_history = []
 
     # Instantiate Model & optimizer
     model = model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=configs["learning_rate"])
+    optimizer = torch.optim.AdamW(model.parameters(), lr=configs.learning_rate)
 
     trainer_loader = BatchLoader(
         train=True,
-        batch_size=configs["max_training_batch_size"],
-        max_seq_len=configs["max_context_window"],
+        batch_size=configs.max_training_batch_size,
+        max_seq_len=configs.max_context_window,
         device=device,
     )
 
@@ -96,39 +98,39 @@ class BatchLoader:
         return x, y
 
 
-def save_model_and_loss_logs(model, configs, loss_logs):
+def save_model_and_loss_logs(model, configs:ModelConfig, loss_logs):
 
-    Path(configs["save_path"]).parent.mkdir(parents=True, exist_ok=True)
-    Path(configs["loss_history"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(configs.save_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(configs.loss_history).parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"\nSaving model weights to: {configs["save_path"]}")
-    torch.save(model.state_dict(), configs["save_path"])
+    print(f"\nSaving model weights to: {configs.save_path}")
+    torch.save(model.state_dict(), configs.save_path)
 
 
     """Saves a list of loss floats to a text file, one per line."""
-    with open(configs["loss_history"], "w", encoding="utf-8") as f:
+    with open(configs.loss_history, "w", encoding="utf-8") as f:
         for loss in loss_logs:
             f.write(f"{loss}\n")
-    print(f"Loss history successfully saved to {configs["loss_history"]}")
+    print(f"Loss history successfully saved to {configs.loss_history}")
 
 
-def plot_loss_history(config):
+def plot_loss_history(config:ModelConfig):
 
     loss_history = []
 
-    with open(config["loss_history"], "r", encoding="utf-8") as f:
+    with open(config.loss_history, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
                 loss_history.append(float(line))
 
-    print(f"Loaded {len(loss_history)} steps from {config["loss_history"]}")
+    print(f"Loaded {len(loss_history)} steps from {config.loss_history}")
 
 
     plt.figure(figsize=(10, 5))
-    plt.plot(loss_history, color='#00FFCC', label=f'{config["model_name"]} Training Loss')
-    plt.axhline(y=torch.log(torch.tensor(config["vocab_size"])).item(), color='red', linestyle='--', 
-                label=f'Theoretical Random Loss ln({config["vocab_size"]}) ≈ {math.log(config["vocab_size"]):.4f})')
+    plt.plot(loss_history, color='#00FFCC', label=f'{config.model_name} Training Loss')
+    plt.axhline(y=torch.log(torch.tensor(config.vocab_size)).item(), color='red', linestyle='--', 
+                label=f'Theoretical Random Loss ln({config.vocab_size}) ≈ {math.log(config.vocab_size):.4f})')
     plt.title("Loss Plot (TinyStories Dataset)")
     plt.xlabel("Step")
     plt.ylabel("Cross-Entropy Loss (Nats)")

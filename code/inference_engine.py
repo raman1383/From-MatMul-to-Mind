@@ -1,37 +1,60 @@
 import os
 import torch
+from pathlib import Path
 from typing import Optional
 import torch.nn.functional as F
 from einops import rearrange, pack
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from model_config import ModelConfig
 from tokenizerModule import ID_mapper
 
 
 
-def load_model_weights(
-    model_scaffold: torch.nn.Module,
-    save_path: str,
-    device: torch.device,
-) -> Optional[torch.nn.Module]:
-    if not os.path.isfile(save_path):
-        print(f"[ERROR] Weight file not found: {save_path}")
-        return None
+# def load_model_weights(
+#     model_scaffold: torch.nn.Module,
+#     save_path: str,
+#     device: torch.device,
+# ) -> Optional[torch.nn.Module]:
+    
+#     if not os.path.isfile(save_path):
+#         print(f"[ERROR] Weight file not found: {save_path}")
+#         return None
 
+#     try:
+#         state_dict = torch.load(save_path, map_location=device, weights_only=True)
+#         model_scaffold.load_state_dict(state_dict)
+#         model_scaffold = model_scaffold.to(device)
+#         model_scaffold.eval()
+
+#         n_params = sum(p.numel() for p in model_scaffold.parameters())
+#         print(f"[INFO] Loaded weights from {save_path}  ({n_params:,} parameters)")
+#         return model_scaffold
+#     except Exception as e:
+#         print(f"[ERROR] Failed to load weights: {e}")
+#         return None
+
+def load_model_weights(model: torch.nn.Module, save_path: str, device) -> torch.nn.Module:
+    """Load a checkpoint into `model` and return it in eval mode."""
+    path = Path(save_path)
+ 
+    if not path.is_file():
+        raise FileNotFoundError(f"[ERR] Weight file not found: {path.resolve()}")
+ 
     try:
-        state_dict = torch.load(save_path, map_location=device, weights_only=True)
-        model_scaffold.load_state_dict(state_dict)
-        model_scaffold = model_scaffold.to(device)
-        model_scaffold.eval()
-
-        n_params = sum(p.numel() for p in model_scaffold.parameters())
-        print(f"[INFO] Loaded weights from {save_path}  ({n_params:,} parameters)")
-        return model_scaffold
+        state_dict = torch.load(path, map_location=device, weights_only=True)
     except Exception as e:
-        print(f"[ERROR] Failed to load weights: {e}")
-        return None
-
+        raise RuntimeError(f"[ERR] Could not read checkpoint {path}: {e}") from e
+ 
+    # Raises RuntimeError listing missing / unexpected keys or shape mismatches.
+    # (Checkpoints from before the fused-QKV / tied-embedding change won't load: retrain.)
+    model.load_state_dict(state_dict)
+ 
+    model = model.to(device).eval()
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"[INFO] Loaded weights from {path} ({n_params:,} parameters)")
+    return model
 
 # ----------------------------------------------------------------------
 
@@ -81,6 +104,7 @@ def sample_next_token_from_logits(
         kth_value = torch.topk(logits, top_k, dim=-1).values[..., -1, None]
         logits = logits.masked_fill(logits < kth_value, float("-inf"))
 
+
     # 3. Top-p filtering
     if top_p is not None and top_p < 1.0:
         sorted_logits, sorted_indices = torch.sort(
@@ -107,6 +131,7 @@ def sample_next_token_from_logits(
             src=sorted_indices_to_remove,
         )
 
+
         logits = logits.masked_fill(
             indices_to_remove,
             float("-inf"),
@@ -127,7 +152,7 @@ def sample_next_token_from_logits(
 @torch.inference_mode()
 def batched_simple_inference(
     model_scaffold: torch.nn.Module,
-    configs,
+    configs:ModelConfig,
     num_gen_steps: int,
     prompt_strs: list[str],
     device,
@@ -190,7 +215,7 @@ def batched_simple_inference(
 
     loaded_model = load_model_weights(
         model_scaffold,
-        configs["save_path"],
+        configs.save_path,
         device,
     )
 
@@ -220,7 +245,7 @@ def batched_simple_inference(
         # Keep only the portion that fits in the model's
         # training context window.
         context_window_limited_sequences = (
-            generated_sequences[:, -configs["max_context_window"]:]
+            generated_sequences[:, -configs.max_context_window:]
         )
 
         # print(
@@ -313,6 +338,7 @@ def batched_simple_inference(
 
 # ----------------------------------------------------------------------
 
+#TODO:
 # @dataclass
 class KV_cache:
     """
@@ -322,23 +348,23 @@ class KV_cache:
     [num_layers, batch, num_kv_heads, max_context_window, head_dim]
 
     The attention module is responsible for expanding KV heads
-    to match num_q_heads (repeat_interleave) when necessary.
+    to match num_q_heads when necessary.
     """
 
     def __init__(
         self,
-        config: dict,
+        config: ModelConfig,
         inference_batch_size:int = 1,
         device: torch.device = 'cuda',
         dtype: torch.dtype = torch.float16,
 
     ):
-        self.max_context_window   = config["max_context_window"]
+        self.max_context_window   = config.max_context_window
         self.inference_batch_size = inference_batch_size
 
-        self.head_dim     = config["embed_dim"] // config["num_q_heads"]
-        self.num_kv_heads = config["num_kv_heads"]
-        self.num_layers   = config["num_layers"]
+        self.head_dim     = config.head_dim
+        self.num_kv_heads = config.num_kv_heads
+        self.num_layers   = config.num_layers
 
         self.device = device
         self.dtype  = dtype
@@ -410,6 +436,10 @@ class KV_cache:
     def current_abs_pos(self) -> int:
         return self.position
 
+    @property
+    def memory_bytes(self) -> int:
+        return (self.keys.numel() + self.values.numel()) * self.keys.element_size()
+
 
 
 # disables gradient recording and removes additional 
@@ -417,14 +447,16 @@ class KV_cache:
 @torch.inference_mode()
 def advanced_inference(
     model_scaffold: torch.nn.Module,
-    configs: Dict[str, Any],
-    num_gen_steps: int,
+    configs: ModelConfig,
+    max_num_gen_steps: int,
     prompt_strs: list[str],
-    device: Union[str, torch.device],
+    device,
+
     temperature: float = 0.6,
     top_k: Optional[int] = 50,
     top_p: Optional[float] = 0.9,
     eos_token_id: Optional[int] = None,
+
 ) -> list[str]:
 
     
@@ -454,7 +486,7 @@ def advanced_inference(
 
     model = load_model_weights(
         model_scaffold,
-        configs["save_path"],
+        configs.save_path,
         device,
     )
 
@@ -469,7 +501,7 @@ def advanced_inference(
 
 
     # Decode – can run for any number of steps
-    for _ in range(num_gen_steps - 1):
+    for _ in range(max_num_gen_steps - 1):
 
         logits = model(next_token, cache=cache)
         next_token = sample_next_token_from_logits(logits[:, -1, :], temperature, top_k)
