@@ -28,7 +28,7 @@ class ModelConfig:
     num_experts_per_tkn: int | None
 
     save_path: str
-    loss_history: str
+    val_loss_history: str
 
 
     @property
