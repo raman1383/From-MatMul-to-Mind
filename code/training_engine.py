@@ -8,84 +8,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from einops import rearrange
 
+from data_loader import BatchLoader
 from model_config import ModelConfig
-
-
-
-# TODO:np.fromstring is deprecated. Store tokens as a uint16 .bin and use np.memmap. 
-# Vocab 2048 fits easily, and you can build the batch with a single index tensor 
-# instead of a Python list comprehension.
-class BatchLoader:
-    def __init__(
-            self, 
-            split: str, 
-            max_batch_size: int,
-            max_seq_len: int ,
-            device, 
-            seed=None,
-            #  train:bool, batch_size:int, max_seq_len:int, device
-        ):
-
-        if split not in ("train", "val"):
-            raise ValueError("split must be 'train' or 'val'")
-
-    
-
-        self.batch_size = max_batch_size
-        self.max_seq_len = max_seq_len
-        self.device = device 
-
-        if split == "train":
-            data_file = "../data/tokenized-2048-train-tinyStories-10Mb.txt"
-        else:
-            data_file = "../data/tokenized-2048-valid-tinyStories-1Mb.txt"
-
-
-        self.tokens = self._load_tokens(data_file)
-
-
-    def _load_tokens(self, path):
-        path = Path(path)
-        text = path.read_text(encoding="utf-8")
-
-        # Assumes the file contains token IDs separated by whitespace.
-        arr = np.fromstring(text, dtype=np.int64, sep=" ")
-
-        if arr.size == 0:
-            raise ValueError(f"No token IDs found in {path}")
-        
-        return torch.tensor(arr, dtype=torch.long)
-
-
-    def get_batch(self):
-        """Random windows (for training). Highest valid start is n_tokens - seq_len - 1."""
-
-        tokens = self.tokens
-
-        # Start positions must leave room for x and shifted y.
-        max_start = len(tokens) - self.max_seq_len - 1
-        starts = torch.randint(0, max_start + 1, (self.batch_size,))
-
-        x = torch.stack([tokens[i : i + self.max_seq_len] for i in starts])
-        y = torch.stack([tokens[i + 1 : i + 1 + self.max_seq_len] for i in starts])
-
-        x = x.to(self.device, non_blocking=True)
-        y = y.to(self.device, non_blocking=True)
-        return x, y
-
-
-
-    # def sequential_batches(self, max_batches=None):
-    #     """
-    #     Deterministic, non-overlapping windows covering the file in order (for validation):
-    #     the same tokens are scored on every call, so val loss is comparable across runs.
-    #     """
-    #     n_windows = (self.n_tokens - 1) // self.seq_len
-    #     starts = torch.arange(n_windows) * self.seq_len
-    #     for b, i in enumerate(range(0, n_windows, self.batch_size)):
-    #         if max_batches is not None and b >= max_batches:
-    #             break
-    #         yield self._gather(starts[i:i + self.batch_size])
 
 
 
@@ -108,105 +32,169 @@ def _cross_entropy(logits, targets, reduction="mean"):
 
 
 
-
+# TODO: instead of jus logging metrics, save the model checkpoint too, must be able to load and restart training from it.
 def train_and_save_model(
-        model:torch.nn.Module, 
-        configs:ModelConfig, 
-        device, 
-        training_steps:int,
-
-        eval_interval: int = 50, 
-        eval_batches: int = 20, 
-        seed: int = 42,
-    ):
+    model: torch.nn.Module,
+    configs: ModelConfig,
+    device,
+    training_steps: int,
+    eval_interval: int = 50,
+    eval_batches: int = 20,
+    seed: int = 42,
+    log_interval: int = 10,
+):
 
     torch.manual_seed(seed)
-    train_history, val_history = [], []      # val_history: (step, loss)
-
-
-    # Instantiate Model & optimizer
-    model = model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=configs.learning_rate)
-
-    # trainer_loader = BatchLoader(
-    #     train=True,
-    #     batch_size=configs.max_training_batch_size,
-    #     max_seq_len=configs.max_context_window,
-    #     device=device,
-    # )
-
-    train_loader = BatchLoader("train", configs.max_training_batch_size, configs.max_context_window, device, seed=seed)
-    val_loader   = BatchLoader("val",   configs.max_training_batch_size, configs.max_context_window, device)
-
-
     
-    model.train()
-    for step in range(training_steps):
+    train_history = []
+    val_history = []
 
+    # Instantiate model & optimizer
+    model = model.to(device)
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=configs.learning_rate,
+    )
+
+    train_loader = BatchLoader(
+        split="train",
+        max_batch_size=configs.max_training_batch_size,
+        max_seq_len=configs.max_context_window,
+        device=device,
+        seed=seed,
+    )
+
+    # Fixed seed here is not necessary because validation is deterministic,
+    # but leaving it explicit makes the loader configuration unambiguous.
+    val_loader = BatchLoader(
+        split="val",
+        max_batch_size=configs.max_training_batch_size,
+        max_seq_len=configs.max_context_window,
+        device=device,
+    )
+
+    model.train()
+
+    # Accumulate on device so .item() does not happen every step.
+    running_train_loss = torch.zeros((), device=device)
+    steps_since_log = 0
+
+
+    for step in range(training_steps):
         x, y = train_loader.get_batch()
 
-        loss = _cross_entropy(model(x), y)
+        logits = model(x)
+        loss = _cross_entropy(logits, y)
 
-        # Backward pass and optimization
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
 
+        running_train_loss += loss.detach()
+        steps_since_log += 1
 
-        # TODO: loss.item() every step forces a GPU sync. Accumulate on-device and log every N steps.
+        should_log = (
+            (step + 1) % log_interval == 0
+            or step == 0
+            or step == training_steps - 1
+        )
 
-        # Log metrics
-        train_history.append(loss.item())
 
-        # if step % 5 == 0 or step == training_steps - 1:
-        #     print(f"Step {step:04d} | Batch Loss: {loss.item():.4f} nats")
+        if should_log:
+            mean_train_loss = (
+                running_train_loss / steps_since_log
+            ).item()
+
+            train_history.append(mean_train_loss)
+
+            running_train_loss.zero_()
+            steps_since_log = 0
+
+
 
         if step % eval_interval == 0 or step == training_steps - 1:
-            # cheap partial eval during training, full pass at the very end
             is_last = step == training_steps - 1
-            # val_loss, val_ppl = evaluate(model, val_loader, None if is_last else eval_batches)
-            # val_history.append((step, val_loss))
-            print(f"Step {step:04d} | train(batch) {loss.item():.4f} | "
-                #   f"val {val_loss:.4f} | val ppl {val_ppl:.1f}"
-                  )
 
-    save_model_and_loss_logs(model, configs, train_history)
+            val_loss, val_ppl = evaluate(
+                model,
+                val_loader,
+                max_batches=None if is_last else eval_batches,
+            )
+
+            val_history.append((step, val_loss))
+
+            # Use the most recent logged training loss.
+            if train_history:
+                display_train_loss = train_history[-1]
+            else:
+                display_train_loss = loss.item()
+
+            print(
+                f"Step {step:04d} | "
+                f"train(avg) {display_train_loss:.4f} | "
+                f"val {val_loss:.4f} | "
+                f"val ppl {val_ppl:.2f}"
+            )
+            
+    save_model_and_loss_logs(
+        model,
+        configs,
+        train_history,
+    )
+
+    return train_history, val_history
 
 
-    # val_path = Path(configs.val_loss_history)
-
-    # with open(val_path, "w", encoding="utf-8") as f:
-    #     for step, v in val_history:
-    #         f.write(f"{step} {v}\n")
-    # print(f"Validation history saved to {val_path}")
-
-
-    # return train_history, val_history
 
 
 
+@torch.no_grad()
+def evaluate(
+    model: nn.Module,
+    loader: BatchLoader,
+    max_batches: int | None = None,
+):
+    """
+    Mean per-token cross-entropy over a deterministic validation pass.
 
+    The same validation target tokens are evaluated in the same order
+    every time this function is called.
 
-# @torch.no_grad()
-# def evaluate(model: nn.Module, loader: BatchLoader, max_batches=None):
-#     """
-#     Mean per-token cross-entropy over a deterministic pass of the validation set.
-#     Sums the loss and divides by the token count, so a smaller last batch is weighted correctly.
-#     Returns (val_loss_nats, perplexity).
-#     """
-#     was_training = model.training
-#     model.eval()
- 
-#     total_loss, total_tokens = 0.0, 0
-#     for x, y in loader.sequential_batches(max_batches):
-#         total_loss += _cross_entropy(model(x), y, reduction="sum").item()
-#         total_tokens += y.numel()
- 
-#     model.train(was_training)
- 
-#     mean_loss = total_loss / total_tokens
-#     return mean_loss, math.exp(mean_loss)
+    Returns:
+        mean_loss_nats, perplexity
+    """
 
+    was_training = model.training
+    model.eval()
+
+    total_loss = None
+    total_tokens = 0
+
+    for x, y in loader.sequential_batches(max_batches):
+        loss = _cross_entropy(
+            model(x),
+            y,
+            reduction="sum",
+        )
+
+        # Keep accumulation on the same device as the model.
+        if total_loss is None:
+            total_loss = loss.detach()
+        else:
+            total_loss += loss.detach()
+
+        total_tokens += y.numel()
+
+    if total_loss is None or total_tokens == 0:
+        raise ValueError("Validation loader produced no tokens")
+
+    mean_loss = (total_loss / total_tokens).item()
+    perplexity = math.exp(mean_loss)
+
+    model.train(was_training)
+
+    return mean_loss, perplexity
 
 
 
