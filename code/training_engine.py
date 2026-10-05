@@ -195,7 +195,8 @@ def evaluate(
 
 
 
-# TODO: Checkpoints can't resume. Save the config, optimizer state, and step alongside the weights.
+# TODO:
+# Checkpoints can't resume. Save the config, optimizer state, and step alongside the weights.
 def save_model_and_loss_logs(model, configs:ModelConfig, loss_logs):
 
     Path(configs.save_path).parent.mkdir(parents=True, exist_ok=True)
