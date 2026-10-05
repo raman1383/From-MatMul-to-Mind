@@ -1,12 +1,7 @@
-import math
 import torch
 import numpy as np
-import torch.nn as nn
 from pathlib import Path
-import matplotlib.pyplot as plt
-from einops import rearrange
 
-from model_config import ModelConfig
 
 
 
@@ -49,10 +44,6 @@ def convert_txt_to_bin(txt_path: str | Path, bin_path: str | Path) -> None:
     )
 
 
-
-# TODO: np.fromstring is deprecated. Store tokens as a uint16 .bin and use np.memmap. 
-# Vocab 2048 fits easily, and you can build the batch with a single index tensor 
-# instead of a Python list comprehension.
 class BatchLoader:
     def __init__(
         self,

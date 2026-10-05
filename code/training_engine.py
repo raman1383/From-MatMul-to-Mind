@@ -1,8 +1,5 @@
-# get batch -> FWD -> BWD -> step. repeat
-
 import math
 import torch
-import numpy as np
 import torch.nn as nn
 from pathlib import Path
 import matplotlib.pyplot as plt

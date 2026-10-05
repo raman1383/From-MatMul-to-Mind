@@ -1,7 +1,4 @@
-import torch
-from typing import Union
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 
 @dataclass(frozen=True)
