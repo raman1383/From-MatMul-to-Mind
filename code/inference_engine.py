@@ -126,7 +126,6 @@ def sample_next_token_from_logits(
 # ----------------------------------------------------------------------
 
 
-
 @torch.inference_mode()
 def batched_simple_inference(
     model_scaffold: torch.nn.Module,
@@ -311,13 +310,7 @@ def batched_simple_inference(
     return decoded_list
 
 
-
-    
-
 # ----------------------------------------------------------------------
-
-
-
 
 
 
