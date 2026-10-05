@@ -11,6 +11,10 @@ from einops import rearrange
 from model_config import ModelConfig
 
 
+
+# TODO:np.fromstring is deprecated. Store tokens as a uint16 .bin and use np.memmap. 
+# Vocab 2048 fits easily, and you can build the batch with a single index tensor 
+# instead of a Python list comprehension.
 class BatchLoader:
     def __init__(
             self, 
@@ -104,6 +108,7 @@ def _cross_entropy(logits, targets, reduction="mean"):
 
 
 
+
 def train_and_save_model(
         model:torch.nn.Module, 
         configs:ModelConfig, 
@@ -146,6 +151,9 @@ def train_and_save_model(
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
+
+
+        # TODO: loss.item() every step forces a GPU sync. Accumulate on-device and log every N steps.
 
         # Log metrics
         train_history.append(loss.item())
@@ -202,6 +210,7 @@ def train_and_save_model(
 
 
 
+# TODO: Checkpoints can't resume. Save the config, optimizer state, and step alongside the weights.
 def save_model_and_loss_logs(model, configs:ModelConfig, loss_logs):
 
     Path(configs.save_path).parent.mkdir(parents=True, exist_ok=True)
@@ -231,6 +240,7 @@ def plot_loss_history(config:ModelConfig):
     print(f"Loaded {len(loss_history)} steps from {config.val_loss_history}")
 
 
+    plt.style.use('dark_background')
     plt.figure(figsize=(10, 5))
     plt.plot(loss_history, color='#00FFCC', label=f'{config.model_name} Training Loss')
     plt.axhline(y=torch.log(torch.tensor(config.vocab_size)).item(), color='red', linestyle='--', 
@@ -238,7 +248,6 @@ def plot_loss_history(config:ModelConfig):
     plt.title("Loss Plot (TinyStories Dataset)")
     plt.xlabel("Step")
     plt.ylabel("Cross-Entropy Loss (Nats)")
-    plt.style.use('dark_background')
     plt.grid(True, color='#333333')
     plt.legend()
     plt.show()
@@ -250,7 +259,7 @@ def inspect_weight_file(weight_file_path: str, print_weights: bool=False):
     if not weight_file_path.exists():
         raise FileNotFoundError(f"Weight file not found: {weight_file_path}")
 
-    state_dict = torch.load(weight_file_path, map_location="cpu")
+    state_dict = torch.load(weight_file_path, map_location="cpu", weights_only=True)
     print(f"Loaded state_dict from {weight_file_path}")
 
     # Number of individual scalar parameters
@@ -274,7 +283,6 @@ def inspect_weight_file(weight_file_path: str, print_weights: bool=False):
             f"{name}: "
             f"shape={tuple(param.shape)}, "
             f"dtype={param.dtype}, "
-            f"requires_grad={param.requires_grad}, "
             f"numel={param.numel():,}"
         )
 

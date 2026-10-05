@@ -1,3 +1,4 @@
+from collections import deque
 import os
 import torch
 from pathlib import Path
@@ -9,31 +10,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from model_config import ModelConfig
 from tokenizerModule import ID_mapper
+from kv_cache import KV_cache
 
-
-
-# def load_model_weights(
-#     model_scaffold: torch.nn.Module,
-#     save_path: str,
-#     device: torch.device,
-# ) -> Optional[torch.nn.Module]:
-    
-#     if not os.path.isfile(save_path):
-#         print(f"[ERROR] Weight file not found: {save_path}")
-#         return None
-
-#     try:
-#         state_dict = torch.load(save_path, map_location=device, weights_only=True)
-#         model_scaffold.load_state_dict(state_dict)
-#         model_scaffold = model_scaffold.to(device)
-#         model_scaffold.eval()
-
-#         n_params = sum(p.numel() for p in model_scaffold.parameters())
-#         print(f"[INFO] Loaded weights from {save_path}  ({n_params:,} parameters)")
-#         return model_scaffold
-#     except Exception as e:
-#         print(f"[ERROR] Failed to load weights: {e}")
-#         return None
 
 def load_model_weights(model: torch.nn.Module, save_path: str, device) -> torch.nn.Module:
     """Load a checkpoint into `model` and return it in eval mode."""
@@ -338,182 +316,146 @@ def batched_simple_inference(
 
 # ----------------------------------------------------------------------
 
-#TODO:
-# @dataclass
-class KV_cache:
-    """
-    Static pre-allocated KV cache with sliding-window support.
-    Fully compatible with MHA / GQA / MQA / SHA.
-    
-    [num_layers, batch, num_kv_heads, max_context_window, head_dim]
-
-    The attention module is responsible for expanding KV heads
-    to match num_q_heads when necessary.
-    """
-
-    def __init__(
-        self,
-        config: ModelConfig,
-        inference_batch_size:int = 1,
-        device: torch.device = 'cuda',
-        dtype: torch.dtype = torch.float16,
-
-    ):
-        self.max_context_window   = config.max_context_window
-        self.inference_batch_size = inference_batch_size
-
-        self.head_dim     = config.head_dim
-        self.num_kv_heads = config.num_kv_heads
-        self.num_layers   = config.num_layers
-
-        self.device = device
-        self.dtype  = dtype
-
-
-        shape = (self.num_layers, 
-                 self.inference_batch_size, 
-                 self.num_kv_heads, 
-                 self.max_context_window, 
-                 self.head_dim
-        )
-
-        self.keys   = torch.zeros(shape, device=device, dtype=dtype)
-        self.values = torch.zeros(shape, device=device, dtype=dtype)
-
-        self.position = 0  # absolute position counter(grows forever)
-        self.seq_len  = 0  # how many slots are currently filled
-
-    def update(
-        self,
-        layer_idx: int,
-        key: torch.Tensor,         # [B, num_kv_heads, q_len, head_dim] (RoPE already applied)
-        value: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        
-        q_len = key.shape[2]
-        
-        if layer_idx == 0 and self.seq_len + q_len > self.max_context_window:
-            self._shift(q_len)
-
-        start, end = self.seq_len, self.seq_len + q_len
-        self.keys  [layer_idx, :, :, start:end, :] = key
-        self.values[layer_idx, :, :, start:end, :] = value
-
-        if layer_idx == self.num_layers - 1:      # advance once per forward pass
-            self.seq_len   = end
-            self.position += q_len
-
-        return (self.keys  [layer_idx, :, :, :end, :],
-                self.values[layer_idx, :, :, :end, :])
-
-
-    def get(self, layer_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-
-        usable = min(self.seq_len, self.max_context_window)
-        start  = self.seq_len - usable
-
-        return (
-            self.keys  [layer_idx, :, :, start:self.seq_len, :],
-            self.values[layer_idx, :, :, start:self.seq_len, :],
-        )
-
-
-    def _shift(self, incoming: int):
-        keep = max(0, self.max_context_window - incoming)
-        if keep > 0:
-            self.keys  [..., :keep, :] = self.keys  [..., self.seq_len-keep:self.seq_len, :].clone()
-            self.values[..., :keep, :] = self.values[..., self.seq_len-keep:self.seq_len, :].clone()
-        self.seq_len = keep
-
-
-    def reset(self):
-        # No need to zero memory — just rewind the pointer.
-        # Stale data past max_context_window gets over-written.
-        self.seq_len  = 0
-        self.position = 0
-
-    @property
-    def current_abs_pos(self) -> int:
-        return self.position
-
-    @property
-    def memory_bytes(self) -> int:
-        return (self.keys.numel() + self.values.numel()) * self.keys.element_size()
 
 
 
-# disables gradient recording and removes additional 
-# autograd overhead such as version-counter/view tracking.
+
+
+@dataclass
+class _Request:
+    index: int
+    prompt_ids: list # FULL prompt, never truncated
+    max_new_tokens: int
+    n_prefilled: int = 0 # prompt tokens already in the cache
+    generated: list = field(default_factory=list)
+    finish_reason: str = ""
+
+
+@dataclass
+class Completion:
+    text: str            # prompt + generated
+    completion: str      # generated only
+    finish_reason: str   # "eos" | "length"
+
+
+
 @torch.inference_mode()
 def advanced_inference(
-    model_scaffold: torch.nn.Module,
+
+    model,
     configs: ModelConfig,
-    max_num_gen_steps: int,
     prompt_strs: list[str],
+    
     device,
+    max_new_tokens: int = 64,
+
+    max_KV_lanes: int = 4,               # max sequences in flight (cache lanes)
+    chunk_size: int = 32,             # prompt tokens prefilled per iteration
+
 
     temperature: float = 0.6,
     top_k: Optional[int] = 50,
     top_p: Optional[float] = 0.9,
     eos_token_id: Optional[int] = None,
 
-) -> list[str]:
+) -> list[Completion]:
 
     
     """
 
-    Autoregressive generation split into two distinct stages:
-        1. Prefill Stage: Process all prompt tokens at once, populating the KV cache.
-        2. Decode Stage: Process tokens step-by-step (1 token input per step).
+    Iteration-level scheduling with chunked prefill and a ring-buffer KV cache.
+    Prompts and generations may be arbitrarily long; the cache stays at
+    max_context_window tokens per lane. Returns one Completion per prompt, in input order.
     
     """
-
-    # pre-allocate a max_context_len sized pair torch.tensor, 
-
-
-    tensorized_prompts = [
-        torch.tensor(
-            ID_mapper.encode(prompt),
-            dtype=torch.long,
-        )
-        for prompt in prompt_strs
-    ]
-
-    prompts = torch.stack(tensorized_prompts).to(device) # [batch_size, seq_len]
-
-    batch_size, seq_len = prompts.shape[0], prompts.shape[1]
-
-
-    model = load_model_weights(
-        model_scaffold,
-        configs.save_path,
-        device,
-    )
 
     model.eval()
 
-    cache = KV_cache(configs, device=device, inference_batch_size=batch_size, dtype=next(model.parameters()).dtype)
+    num_lanes = min(max_KV_lanes, len(prompt_strs))
 
-    # Prefill
-    logits = model(prompts, cache=cache)
-    next_token = sample_next_token_from_logits(logits[:, -1, :], temperature, top_k, top_p)
-    generated = [next_token]
-
-
-    # Decode – can run for any number of steps
-    for _ in range(max_num_gen_steps - 1):
-
-        logits = model(next_token, cache=cache)
-        next_token = sample_next_token_from_logits(logits[:, -1, :], temperature, top_k)
-        generated.append(next_token)
-
-        if eos_token_id is not None and (next_token == eos_token_id).all():
-            break
+    cache = KV_cache(
+        configs, 
+        num_lanes=num_lanes, 
+        device=device,
+        dtype=next(model.parameters()).dtype
+    )
 
 
-    cache.reset()
+    waiting = deque()
 
-    generated = torch.cat(generated, dim=1)          # [B, num_gen_steps]
-    decoded_list = [ID_mapper.decode(row.tolist()) for row in generated]
-    
-    return decoded_list
+
+    for i, p in enumerate(prompt_strs):
+        ids = ID_mapper.encode(p)
+        if not ids:
+            raise ValueError(f"Prompt {i} encodes to zero tokens")
+        waiting.append(_Request(i, ids, max_new_tokens))
+
+
+    free_lanes = list(range(num_lanes))
+
+    prefilling: dict[int, _Request] = {}     # lane -> prompt not fully consumed yet
+    running:    dict[int, _Request] = {}     # lane -> generating
+    finished:   dict[int, _Request] = {}     # input index -> done
+
+
+    def sample(logits):                      
+        # [B,V] -> [B,1]; 
+        return sample_next_token_from_logits(logits, temperature, top_k, top_p)
+
+
+    def accept(lane, req, tok):
+        req.generated.append(tok)
+        
+        if eos_token_id is not None and tok == eos_token_id:
+            req.finish_reason = "eos"
+        
+        elif len(req.generated) >= req.max_new_tokens:
+            req.finish_reason = "length"
+        
+        if req.finish_reason:                # retire: free the lane immediately
+            cache.free(lane)
+            free_lanes.append(lane)
+            del running[lane]
+            finished[req.index] = req
+
+
+    while waiting or prefilling or running:
+
+        # 1) ADMIT: claim a lane, no compute yet
+        while waiting and free_lanes:
+            prefilling[free_lanes.pop()] = waiting.popleft()
+
+        # 2) PREFILL: one chunk of one request per iteration, so decode never stalls long
+        if prefilling:
+            lane, req = next(iter(prefilling.items()))
+            lo = req.n_prefilled
+            hi = min(lo + chunk_size, len(req.prompt_ids))
+            ids    = torch.tensor([req.prompt_ids[lo:hi]], device=device)
+            logits = model(ids, cache=cache, lane_ids=torch.tensor([lane], device=device))
+            req.n_prefilled = hi
+            if hi == len(req.prompt_ids):    # prompt done -> sample first token
+                del prefilling[lane]
+                running[lane] = req
+                accept(lane, req, sample(logits[:, -1, :]).item())
+
+
+        # 3) DECODE: one batched step over every generating request
+        if running:
+            lane     = list(running)
+            lane_ids = torch.tensor(lane, device=device)
+            last     = torch.tensor([[running[s].generated[-1]] for s in lane], device=device)
+            logits   = model(last, cache=cache, lane_ids=lane_ids)
+            for s, t in zip(lane, sample(logits[:, -1, :])[:, 0].tolist()):
+                accept(s, running[s], t)
+
+
+    results = []
+    for i in range(len(prompt_strs)):
+        r   = finished[i]
+        gen = r.generated[:-1] if r.finish_reason == "eos" else r.generated
+        results.append(Completion(
+            text=ID_mapper.decode(r.prompt_ids + gen),
+            completion=ID_mapper.decode(gen),
+            finish_reason=r.finish_reason,
+        ))
+    return results
