@@ -40,8 +40,6 @@ def train_and_save_model(
     seed: int = 42,
     log_interval: int = 10,
 ):
-
-    torch.manual_seed(seed)
     
     train_history = []
     val_history = []
@@ -119,7 +117,8 @@ def train_and_save_model(
                 max_batches=None if is_last else eval_batches,
             )
 
-            val_history.append((step, val_loss))
+            # val_history.append((step, val_loss))
+            val_history.append(val_loss)
 
             # Use the most recent logged training loss.
             if train_history:
@@ -137,7 +136,7 @@ def train_and_save_model(
     save_model_and_loss_logs(
         model,
         configs,
-        train_history,
+        val_history,
     )
 
     return train_history, val_history
@@ -228,7 +227,7 @@ def plot_loss_history(config:ModelConfig):
 
     plt.style.use('dark_background')
     plt.figure(figsize=(10, 5))
-    plt.plot(loss_history, color='#00FFCC', label=f'{config.model_name} Training Loss')
+    plt.plot(loss_history, color='#00FFCC', label=f'{config.model_name} Validation Loss')
     plt.axhline(y=torch.log(torch.tensor(config.vocab_size)).item(), color='red', linestyle='--', 
                 label=f'Theoretical Random Loss ln({config.vocab_size}) ≈ {math.log(config.vocab_size):.4f})')
     plt.title("Loss Plot (TinyStories Dataset)")
