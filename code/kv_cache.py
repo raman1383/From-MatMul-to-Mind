@@ -30,7 +30,7 @@ class KV_cache:
 
         shape = (config.num_layers, 
                  num_lanes, 
-                 config.num_kv_heads,
+                 config.attention.num_kv_heads,
                  self.cache_window, 
                  config.head_dim
                 )

@@ -185,7 +185,6 @@ class BatchLoader:
         return x, y
 
 
-
     def sequential_batches(self, max_batches: int | None = None):
         """
         Deterministic validation pass.
@@ -234,4 +233,10 @@ class BatchLoader:
             num_batches += 1
 
 
+    # for reproducable checkpointing 
+    def state_dict(self) -> dict:
+        return {"rng_state": self.rng.get_state()}
+
+    def load_state_dict(self, state: dict) -> None:
+        self.rng.set_state(state["rng_state"].cpu())
 

@@ -31,21 +31,17 @@ class ModelConfig:
     
     learning_rate: float
 
-    save_path: str
-    val_loss_history: str
 
     attention: AttentionConfig | None
     ffn: FFNConfig | None
 
+    save_path: str
+    val_loss_history: str
 
-    # num_q_heads:  int | None 
-    # num_kv_heads: int | None 
+    checkpoint_dir: str = "../checkpoints"
+    checkpoint_every_steps: int = 1000
+    keep_last_n_checkpoints: int = 3
 
-    # rope_theta: float | None 
-
-    # mlp_to_embed_expand_factor: float | None
-    # num_experts: int | None
-    # num_experts_per_tkn: int | None
 
 
     @property
