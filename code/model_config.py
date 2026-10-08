@@ -52,6 +52,10 @@ class ModelConfig:
     def num_groups(self) -> int:
         return self.attention.num_q_heads // self.attention.num_kv_heads
 
+    @property
+    def ffn_hidden_dim(self) -> int:
+        return self.ffn.mlp_to_embed_expand_factor * self.embed_dim
+
 
     def __post_init__(self):
 
@@ -72,3 +76,11 @@ class ModelConfig:
                     "head_dim must be even for rotary embeddings"
                 )
 
+
+
+        if self.ffn is not None and self.ffn.num_experts >= 1 :
+            
+            if self.ffn.num_experts_per_tkn > self.ffn.num_experts:
+                raise ValueError(
+                    "num_experts must be bigger than num_experts_per_tkn"
+                )
