@@ -17,7 +17,7 @@ class FFNConfig:
     MoE_num_experts_per_tkn: int
     MoE_capacity_factor: float
     MoE_router_aux_loss_coef: float
-    MoE_router_z_loss_coeff: float
+    MoE_router_z_loss_coef: float
 
 
 
