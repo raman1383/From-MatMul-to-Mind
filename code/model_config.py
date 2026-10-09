@@ -12,8 +12,12 @@ class AttentionConfig:
 class FFNConfig:
     use_gate: bool
     mlp_to_embed_expand_factor: float
-    num_experts: int
-    num_experts_per_tkn: int
+
+    MoE_num_experts: int
+    MoE_num_experts_per_tkn: int
+    MoE_capacity_factor: float
+    MoE_router_aux_loss_coef: float
+    MoE_router_z_loss_coeff: float
 
 
 
@@ -34,6 +38,7 @@ class ModelConfig:
 
     attention: AttentionConfig | None
     ffn: FFNConfig | None
+
 
     save_path: str
     val_loss_history: str
