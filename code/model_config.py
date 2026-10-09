@@ -83,9 +83,9 @@ class ModelConfig:
 
 
 
-        if self.ffn is not None and self.ffn.num_experts >= 1 :
+        if self.ffn is not None and self.ffn.MoE_num_experts >= 1 :
             
-            if self.ffn.num_experts_per_tkn > self.ffn.num_experts:
+            if self.ffn.MoE_num_experts_per_tkn > self.ffn.MoE_num_experts:
                 raise ValueError(
-                    "num_experts must be bigger than num_experts_per_tkn"
+                    "MoE_num_experts must be bigger than MoE_num_experts_per_tkn"
                 )
