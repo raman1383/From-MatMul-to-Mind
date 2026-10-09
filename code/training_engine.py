@@ -82,7 +82,7 @@ def _atomic_torch_save(obj, path: Path) -> None:
     """Write to a temp file, then rename. A crash mid-write can never leave a
     corrupt checkpoint behind, because os.replace is atomic."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path = path.with_name(path.name + ".tmp")    
     torch.save(obj, tmp_path)
     os.replace(tmp_path, path)
 
@@ -109,6 +109,9 @@ def _rotate_checkpoints(configs: ModelConfig) -> None:
     for old in list_checkpoints(configs)[:-keep]:
         old.unlink()
 
+def _unwrap(model: nn.Module) -> nn.Module:
+    return getattr(model, "_orig_mod", model)
+
 
 def save_checkpoint(
     model: nn.Module,
@@ -130,7 +133,8 @@ def save_checkpoint(
         "step": step,
         "config": asdict(configs),
 
-        "model": model.state_dict(),
+        # "model": model.state_dict(),
+        "model": _unwrap(model).state_dict(),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict() if scheduler is not None else None,
         "scaler": scaler.state_dict() if scaler is not None else None,
@@ -207,7 +211,7 @@ def load_checkpoint(
         )
         raise ValueError(f"Config differs from checkpoint:\n{details}")
 
-    model.load_state_dict(ckpt["model"])
+    _unwrap(model).load_state_dict(ckpt["model"])
     optimizer.load_state_dict(ckpt["optimizer"])
 
     # load_state_dict also restores the *saved* learning rate. The current
@@ -342,12 +346,21 @@ def train_and_save_model(
 
     model.train()
 
+
+    is_moe = configs.ffn is not None and configs.ffn.MoE_num_experts > 1
+
     # ---- main loop --------------------------------------------------------
     for step in range(start_step, training_steps):
         x, y = train_loader.get_batch()
 
-        logits = model(x)
-        loss = _cross_entropy(logits, y)
+        if is_moe:
+            logits, aux = model(x, return_aux_loss=True)
+            ce = _cross_entropy(logits, y)
+            loss = ce + aux
+        else:
+            ce = _cross_entropy(logits := model(x), y)
+            loss = ce
+
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -475,7 +488,7 @@ def save_model_and_loss_logs(
     Path(configs.val_loss_history).parent.mkdir(parents=True, exist_ok=True)
 
     print(f"\nSaving model weights to: {configs.save_path}")
-    _atomic_torch_save(model.state_dict(), Path(configs.save_path))
+    _atomic_torch_save(_unwrap(model).state_dict(), Path(configs.save_path))
 
     with open(configs.val_loss_history, "w", encoding="utf-8") as f:
         for step, loss in val_history:
