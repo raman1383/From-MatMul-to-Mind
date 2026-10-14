@@ -1,6 +1,6 @@
 import torch
 from typing import Tuple
-from model_config import ModelConfig
+from config import ModelConfig
 
 
 class KV_cache:

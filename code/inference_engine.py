@@ -8,7 +8,7 @@ from einops import rearrange, pack
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from model_config import ModelConfig
+from config import ModelConfig
 from tokenizerModule import ID_mapper
 from kv_cache import KV_cache
 

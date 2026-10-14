@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from kv_cache import KV_cache
 from rotary_pos_enc import apply_rotary_pos_emb
 from tensor_tools import init_custom_weight
-from model_config import ModelConfig
+from config import ModelConfig
 
 
 class Attention_SubBlock(nn.Module):

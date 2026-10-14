@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from typing import Tuple
 import training_engine as training_engine 
 from tensor_tools import init_custom_weight
-from model_config import ModelConfig
+from config import ModelConfig
 
 
 # FFN helper functions 
