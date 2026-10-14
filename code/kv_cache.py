@@ -3,12 +3,6 @@ from typing import Tuple
 from model_config import ModelConfig
 
 
-
-
-# TODO: Ring Buffer: turn each lane into a ring buffer, so the oldest token's cache entry is overwritten by the newest.
-
-
-# @dataclass
 class KV_cache:
     """
     Per-lane ring buffer.

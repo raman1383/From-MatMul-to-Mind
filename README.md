@@ -3,6 +3,7 @@ loss curves of different model levels, and model configs, val perplexity
 table of ablations (RoPE vs. none, GQA ratios, tied vs. untied embeddings, with seeds and error bars)
 
 
+the sliding KV cache needs a fixed attention sink or perf degrades past ctx_windw
 
 
 
@@ -28,7 +29,11 @@ what I got wrong initially -> how I fiexd them:
     chunked prefill(where the cache already holds tokens & q_len > 1) mask generation was tricky 
     -> 
 
-
     
     maintaining absolute RoPE positions for sliding KV cache was tricky too. 
     -> 
+
+
+    MoE python loop optimization
+    -> 
+    

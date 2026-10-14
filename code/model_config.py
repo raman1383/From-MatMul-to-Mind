@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+#TODO: divide to TrainConfig, DataConfig and ModelConfig
 
 @dataclass(frozen=True)
 class AttentionConfig:
